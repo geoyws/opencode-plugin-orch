@@ -78,5 +78,11 @@ export async function plugin(
     // Non-critical
   }
 
+  // Graceful shutdown — flush state on process exit
+  const cleanup = () => { store.destroy(); };
+  process.on("beforeExit", cleanup);
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+
   return hooks;
 }

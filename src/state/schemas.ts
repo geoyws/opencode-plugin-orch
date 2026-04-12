@@ -82,6 +82,7 @@ export const Task = z.object({
   dependsOn: z.array(z.string()).default([]),
   result: z.string().optional(),
   tags: z.array(z.string()).default([]),
+  version: z.number().int().default(0),
   createdAt: z.number(),
   completedAt: z.number().optional(),
 });

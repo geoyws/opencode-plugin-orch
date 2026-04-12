@@ -5,8 +5,9 @@ import type { MessageBus } from "../core/message-bus.js";
 export function createMessageTool(manager: TeamManager, bus: MessageBus): ToolDefinition {
   return tool({
     description:
-      "Send a message to a specific team member. If the member is idle, " +
-      "they will be auto-woken. Messages are queued with backpressure limits.",
+      "Send a message to a specific team member by role name. If the member is idle, they are auto-woken to process it. " +
+      "Messages are queued — if the recipient has too many unread messages (backpressure limit, default 50), the send will fail. " +
+      "Use orch_broadcast to message all members at once.",
     args: {
       team: tool.schema.string().describe("Team name"),
       to: tool.schema.string().describe("Role name of the recipient"),

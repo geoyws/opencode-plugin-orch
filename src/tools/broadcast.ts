@@ -5,8 +5,9 @@ import type { MessageBus } from "../core/message-bus.js";
 export function createBroadcastTool(manager: TeamManager, bus: MessageBus): ToolDefinition {
   return tool({
     description:
-      "Broadcast a message to all active members in a team. " +
-      "Idle members are auto-woken. Skips members at backpressure limit.",
+      "Broadcast a message to all active members in a team (skips shutdown/errored members and the sender). " +
+      "Idle members are auto-woken. Members at their backpressure limit are silently skipped. " +
+      "Returns the count of members reached.",
     args: {
       team: tool.schema.string().describe("Team name"),
       content: tool.schema.string().describe("Message content"),

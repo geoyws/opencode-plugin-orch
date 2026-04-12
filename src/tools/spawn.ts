@@ -4,9 +4,9 @@ import type { TeamManager } from "../core/team-manager.js";
 export function createSpawnTool(manager: TeamManager): ToolDefinition {
   return tool({
     description:
-      "Spawn a new AI team member in a separate session. The member gets its own context, " +
-      "receives instructions, and can coordinate via team tools. Optionally pre-load files " +
-      "into the member's context to save exploration time.",
+      "Spawn a new AI team member in a separate session. Each member needs a unique role name within the team. " +
+      "The member gets its own context, receives instructions, and can coordinate via orch_message, orch_broadcast, " +
+      "orch_tasks, and orch_memo. Optionally pre-load files into the member's context to save exploration time.",
     args: {
       team: tool.schema.string().describe("Team name"),
       role: tool.schema.string().describe("Unique role name for this member (e.g. reviewer, coder, tester)"),

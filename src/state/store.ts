@@ -89,6 +89,17 @@ export class Store {
     const snapPath = path.join(this.dir, "snapshot.json");
     fs.writeFileSync(snapPath, JSON.stringify(snap), "utf-8");
     this.lastSnapshotTs = snap.timestamp;
+    this.compactLogs();
+  }
+
+  private compactLogs(): void {
+    const files = ["teams.jsonl", "members.jsonl", "tasks.jsonl", "messages.jsonl", "costs.jsonl", "locks.jsonl"];
+    for (const file of files) {
+      const fp = path.join(this.dir, file);
+      if (fs.existsSync(fp)) {
+        fs.writeFileSync(fp, "", "utf-8");
+      }
+    }
   }
 
   private async replayEvents(): Promise<void> {
@@ -150,6 +161,11 @@ export class Store {
       case "message.created":
         this.messages.push(d as TeamMessage);
         break;
+      case "message.delivered": {
+        const msg = this.messages.find((m) => m.id === (d.id as string));
+        if (msg) msg.delivered = true;
+        break;
+      }
       case "cost.added":
         this.costs.push(d as CostEntry);
         break;
@@ -256,6 +272,13 @@ export class Store {
     this.appendEvent("tasks.jsonl", "task.updated", task);
   }
 
+  compareAndUpdateTask(id: string, expectedVersion: number, updated: Task): boolean {
+    const current = this.tasks.get(id);
+    if (!current || current.version !== expectedVersion) return false;
+    this.appendEvent("tasks.jsonl", "task.updated", updated);
+    return true;
+  }
+
   getTask(id: string): Task | undefined {
     return this.tasks.get(id);
   }
@@ -274,11 +297,7 @@ export class Store {
   }
 
   markDelivered(messageID: string): void {
-    const msg = this.messages.find((m) => m.id === messageID);
-    if (msg) {
-      msg.delivered = true;
-      // No separate event needed — snapshot will capture the state
-    }
+    this.appendEvent("messages.jsonl", "message.delivered", { id: messageID });
   }
 
   getTeamMessages(teamID: string): TeamMessage[] {

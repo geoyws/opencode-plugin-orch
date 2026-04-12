@@ -5,20 +5,13 @@ export class FileLockManager {
   constructor(private store: Store) {}
 
   tryAcquire(filePath: string, memberID: string, teamID: string): { ok: boolean; holder?: string } {
-    const existing = this.store.getLock(filePath);
-    if (existing && existing.memberID !== memberID) {
-      // Find the holder's role for the error message
-      const holder = this.store.getMember(existing.memberID);
-      return { ok: false, holder: holder?.role ?? existing.memberID };
+    const lock: FileLock = { path: filePath, memberID, teamID, acquiredAt: Date.now() };
+    const ok = this.store.acquireLock(lock);
+    if (!ok) {
+      const existing = this.store.getLock(filePath);
+      const holder = existing ? this.store.getMember(existing.memberID)?.role ?? existing.memberID : undefined;
+      return { ok: false, holder };
     }
-
-    const lock: FileLock = {
-      path: filePath,
-      memberID,
-      teamID,
-      acquiredAt: Date.now(),
-    };
-    this.store.acquireLock(lock);
     return { ok: true };
   }
 

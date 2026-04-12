@@ -208,11 +208,13 @@ describe("TaskBoard", () => {
     });
 
     test("creates task with dependencies and tags", () => {
+      // Create the dependency task first
+      const dep = board.addTask(teamID, "Build", "Build step");
       const task = board.addTask(teamID, "Deploy", "Deploy to prod", {
-        dependsOn: ["task_abc"],
+        dependsOn: [dep.id],
         tags: ["devops", "backend"],
       });
-      expect(task.dependsOn).toEqual(["task_abc"]);
+      expect(task.dependsOn).toEqual([dep.id]);
       expect(task.tags).toEqual(["devops", "backend"]);
     });
 
@@ -1095,7 +1097,7 @@ describe("Store", () => {
     });
 
     test("handles corrupt snapshot gracefully (starts fresh from JSONL)", async () => {
-      // Create data
+      // Create data — this writes to JSONL
       store.createTeam({
         id: "t1",
         name: "Good",
@@ -1103,13 +1105,12 @@ describe("Store", () => {
         config: { workStealing: true, backpressureLimit: 50 },
         createdAt: Date.now(),
       });
-      store.destroy();
-
-      // Corrupt the snapshot
+      // Don't call destroy() — it would snapshot then compact JSONL.
+      // Instead, write a corrupt snapshot directly alongside the existing JSONL.
       const snapPath = path.join(tmpDir, ".opencode", "plugin-orch", "snapshot.json");
       fs.writeFileSync(snapPath, "{bad json!!!}", "utf-8");
 
-      // New store should still recover from JSONL
+      // New store should skip corrupt snapshot and recover from JSONL
       const store2 = new Store(tmpDir);
       await store2.init();
 

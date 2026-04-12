@@ -13,6 +13,15 @@ export class TaskBoard {
     dependsOn?: string[];
     tags?: string[];
   }): Task {
+    // Validate that all dependency IDs reference existing tasks
+    if (opts?.dependsOn) {
+      for (const depID of opts.dependsOn) {
+        if (!this.store.getTask(depID)) {
+          throw new Error(`Dependency task "${depID}" does not exist`);
+        }
+      }
+    }
+
     const task: Task = {
       id: genID("task"),
       teamID,
@@ -21,8 +30,17 @@ export class TaskBoard {
       status: "available",
       dependsOn: opts?.dependsOn ?? [],
       tags: opts?.tags ?? [],
+      version: 0,
       createdAt: Date.now(),
     };
+
+    // Check for circular dependencies before persisting
+    if (opts?.dependsOn && opts.dependsOn.length > 0) {
+      if (this.detectCycle(task.id, opts.dependsOn)) {
+        throw new Error(`Adding task "${title}" would create a circular dependency`);
+      }
+    }
+
     this.store.createTask(task);
     return task;
   }
@@ -41,8 +59,11 @@ export class TaskBoard {
       );
     }
 
-    const updated: Task = { ...task, status: "claimed", assignee: memberID };
-    this.store.updateTask(updated);
+    // CAS: atomically check version and update
+    const updated: Task = { ...task, status: "claimed", assignee: memberID, version: task.version + 1 };
+    if (!this.store.compareAndUpdateTask(task.id, task.version, updated)) {
+      throw new Error(`Task "${task.title}" was modified concurrently`);
+    }
     return updated;
   }
 
@@ -53,13 +74,17 @@ export class TaskBoard {
       throw new Error(`Task "${task.title}" is ${task.status}, cannot complete`);
     }
 
+    // CAS: atomically check version and update
     const updated: Task = {
       ...task,
       status: "completed",
       result,
+      version: task.version + 1,
       completedAt: Date.now(),
     };
-    this.store.updateTask(updated);
+    if (!this.store.compareAndUpdateTask(task.id, task.version, updated)) {
+      throw new Error(`Task "${task.title}" was modified concurrently`);
+    }
 
     // Auto-unblock dependents
     this.unblockDependents(task.id);
@@ -71,13 +96,17 @@ export class TaskBoard {
     const task = this.store.getTask(taskID);
     if (!task) throw new Error(`Task ${taskID} not found`);
 
+    // CAS: atomically check version and update
     const updated: Task = {
       ...task,
       status: "failed",
       result: `FAILED: ${reason}`,
+      version: task.version + 1,
       completedAt: Date.now(),
     };
-    this.store.updateTask(updated);
+    if (!this.store.compareAndUpdateTask(task.id, task.version, updated)) {
+      throw new Error(`Task "${task.title}" was modified concurrently`);
+    }
     return updated;
   }
 
@@ -85,6 +114,23 @@ export class TaskBoard {
     const tasks = this.store.listTasks(teamID);
     if (filter) return tasks.filter((t) => t.status === filter);
     return tasks;
+  }
+
+  // ── Cycle detection ───────────────────────────────────────────────
+  private detectCycle(taskID: string, dependsOn: string[]): boolean {
+    const visited = new Set<string>();
+    const stack = [...dependsOn];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current === taskID) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const task = this.store.getTask(current);
+      if (task) {
+        stack.push(...task.dependsOn);
+      }
+    }
+    return false;
   }
 
   // ── Dependency resolution ─────────────────────────────────────────

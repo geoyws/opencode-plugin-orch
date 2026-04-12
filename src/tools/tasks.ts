@@ -6,9 +6,10 @@ import type { Store } from "../state/store.js";
 export function createTasksTool(manager: TeamManager, board: TaskBoard, store: Store): ToolDefinition {
   return tool({
     description:
-      "Manage the team task board. Actions: list (view all tasks), " +
-      "add (create a task), claim (take a task), complete (mark done with result), " +
-      "fail (mark failed with reason).",
+      "Manage the team task board. Actions: list (view tasks, optionally filtered by status), " +
+      "add (create a task with optional dependencies and tags), claim (take an available task — only team members can claim), " +
+      "complete (mark done with result text), fail (mark failed with reason). " +
+      "Tasks with unmet dependencies cannot be claimed. Completed tasks auto-unblock dependents.",
     args: {
       team: tool.schema.string().describe("Team name"),
       action: tool.schema

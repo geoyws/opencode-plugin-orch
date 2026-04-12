@@ -23,6 +23,7 @@ export function createEventHook(deps: EventDeps) {
   const { store, manager, bus, board, costs, fileLocks, escalation, ctx } = deps;
 
   return async ({ event }: { event: Event }): Promise<void> => {
+    try {
     switch (event.type) {
       // ── Session became idle ───────────────────────────────────
       case "session.idle": {
@@ -201,6 +202,18 @@ export function createEventHook(deps: EventDeps) {
         // Budget check
         const team = store.getTeam(member.teamID);
         if (team && costs.isOverBudget(team.id, team.config.budgetLimit)) {
+          // Shut down all active members
+          const members = store.listMembers(team.id);
+          for (const m of members) {
+            if (!["shutdown", "error"].includes(m.state)) {
+              try {
+                await manager.shutdownMember(m.id);
+              } catch {
+                // Best effort
+              }
+            }
+          }
+
           try {
             await ctx.client.tui.showToast({
               body: {
@@ -215,6 +228,19 @@ export function createEventHook(deps: EventDeps) {
           }
         }
         break;
+      }
+    }
+    } catch (err) {
+      try {
+        await ctx.client.app.log({
+          body: {
+            service: "opencode-plugin-orch",
+            level: "error",
+            message: `[orch] Event hook error: ${err}`,
+          },
+        });
+      } catch {
+        // Last resort — don't crash
       }
     }
   };

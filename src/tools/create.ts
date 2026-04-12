@@ -7,8 +7,8 @@ export function createCreateTool(manager: TeamManager, templates: TemplateRegist
   return tool({
     description:
       "Create a new agent team for orchestrating parallel AI teammates. " +
-      "Optionally use a template (code-review, feature-build, debug-squad) " +
-      "to auto-spawn members with predefined roles.",
+      "Optionally use a template (code-review, feature-build, debug-squad) to auto-spawn members with predefined roles and instructions. " +
+      "Configure work stealing, backpressure limits, budget caps, and model escalation chains.",
     args: {
       name: tool.schema.string().describe("Unique team name"),
       template: tool.schema
