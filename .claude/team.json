@@ -1,0 +1,23 @@
+{
+  "name": "orch-tests",
+  "members": [
+    {
+      "name": "tools-tester",
+      "color": "blue",
+      "role": "Writes integration tests for orch_* tools using the shared mock SDK harness",
+      "model": "claude-opus-4-6"
+    },
+    {
+      "name": "events-tester",
+      "color": "green",
+      "role": "Writes integration tests for the event hook (session.idle, session.error, message.updated) and the plugin entry point",
+      "model": "claude-opus-4-6"
+    },
+    {
+      "name": "e2e-runner",
+      "color": "purple",
+      "role": "Writes true end-to-end tests using createOpencode() to start a real opencode server in-process",
+      "model": "claude-opus-4-6"
+    }
+  ]
+}
