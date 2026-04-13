@@ -465,9 +465,11 @@ describe("plugin() entry", () => {
 // hooks so the opencode TUI stays usable.
 describe("plugin() init failure handling", () => {
   const originalInit = Store.prototype.init;
+  const originalDestroy = Store.prototype.destroy;
 
   afterEach(() => {
     Store.prototype.init = originalInit;
+    Store.prototype.destroy = originalDestroy;
   });
 
   function makeInput(): { input: PluginInput; client: MockClient; tmpDir: string } {
@@ -538,5 +540,57 @@ describe("plugin() init failure handling", () => {
       }
     },
     { timeout: 10000 }
+  );
+
+  test(
+    "init resolves after timeout → store.destroy() called to clean up leaked resources",
+    async () => {
+      // Simulate a slow init that eventually succeeds ~6s in (past the 5s deadline).
+      // This is the realistic scenario: disk I/O stalls long enough to blow the
+      // deadline but still completes, leaving a running snapshot timer + signal
+      // handlers that nothing references.
+      Store.prototype.init = function () {
+        return new Promise<void>((resolve) => {
+          setTimeout(() => resolve(), 6000);
+        });
+      };
+
+      let destroyCalls = 0;
+      Store.prototype.destroy = function () {
+        destroyCalls++;
+        // Do NOT call originalDestroy — the stubbed init never started a timer.
+      };
+
+      const { input, client, tmpDir } = makeInput();
+      try {
+        const start = Date.now();
+        const hooks = await plugin(input);
+        const elapsed = Date.now() - start;
+
+        // Timeout fired at ~5s, not waiting for the 6s init.
+        expect(elapsed).toBeGreaterThanOrEqual(4500);
+        expect(elapsed).toBeLessThan(6000);
+
+        // Empty hooks were returned so opencode keeps working.
+        expect(hooks.tool).toBeUndefined();
+
+        // Error toast mentions the timeout.
+        const errorToast = client.toasts.find(
+          (t) => t.variant === "error" && t.message.includes("timed out")
+        );
+        expect(errorToast).toBeDefined();
+
+        // At timeout point, destroy hasn't been called yet — init is still running.
+        expect(destroyCalls).toBe(0);
+
+        // Wait for the late init to resolve; the catch branch should then call
+        // destroy exactly once to clean up the leaked snapshot timer.
+        await new Promise((r) => setTimeout(r, 2000));
+        expect(destroyCalls).toBe(1);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    },
+    { timeout: 15000 }
   );
 });

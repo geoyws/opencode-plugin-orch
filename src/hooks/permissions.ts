@@ -48,7 +48,8 @@ function isGitMutating(command: string): boolean {
 
 export function createPermissionHook(
   manager: TeamManager,
-  fileLocks: FileLockManager
+  fileLocks: FileLockManager,
+  projectDir: string
 ) {
   return async (
     input: Permission,
@@ -96,7 +97,7 @@ export function createPermissionHook(
       // Never crash the host. Leave output.status alone — the default is
       // "ask", which is the safest fallback: never silently allow a denied
       // operation, never block legitimate ones either.
-      logHookError("permission.ask", err);
+      logHookError(projectDir, "permission.ask", err);
     }
   };
 }

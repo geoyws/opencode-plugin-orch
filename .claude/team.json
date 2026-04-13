@@ -4,19 +4,25 @@
     {
       "name": "plugin-hardener",
       "color": "blue",
-      "role": "Wraps plugin.ts init in try/catch + 5s timeout, uses Reporter for startup/failure toasts, returns degraded hooks on failure",
+      "role": "Generalist implementer for plugin entry, init, and event hooks",
       "model": "claude-opus-4-6"
     },
     {
       "name": "hook-hardener",
       "color": "green",
-      "role": "Wraps permissions.ts and activity-tracker.ts hooks in try/catch with Reporter so a hook throw never breaks tool execution",
+      "role": "Generalist implementer for permission and activity-tracker hooks",
       "model": "claude-opus-4-6"
     },
     {
       "name": "tool-hardener",
       "color": "purple",
-      "role": "Wraps all 9 tool execute() functions to return error message strings instead of throwing, so the LLM sees the error and can react",
+      "role": "Generalist implementer for orch_* tool error handling and tests",
+      "model": "claude-opus-4-6"
+    },
+    {
+      "name": "reviewer",
+      "color": "yellow",
+      "role": "Reviews completed work before commit. Reads diffs, runs build + tests, spots regressions, edge cases, missing tests, and shipping-blocker bugs. Never approves silently — always reports concrete findings.",
       "model": "claude-opus-4-6"
     }
   ]

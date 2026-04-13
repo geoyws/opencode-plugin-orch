@@ -4,7 +4,8 @@ import { logHookError } from "./_safe.js";
 
 export function createActivityHook(
   manager: TeamManager,
-  tracker: ActivityTracker
+  tracker: ActivityTracker,
+  projectDir: string
 ) {
   return async (
     input: { tool: string; sessionID: string; callID: string; args: unknown },
@@ -36,7 +37,7 @@ export function createActivityHook(
     } catch (err) {
       // Activity tracking is purely informational — on failure, silently
       // skip recording. Never crash the host.
-      logHookError("tool.execute.after", err);
+      logHookError(projectDir, "tool.execute.after", err);
     }
   };
 }

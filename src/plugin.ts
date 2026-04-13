@@ -25,24 +25,39 @@ export async function plugin(
   // still surface the error to the user via TUI toast + app.log + file log.
   const reporter = new Reporter(input.client, input.directory);
 
+  let initPromise: Promise<{ hooks: Hooks; store: Store }> | null = null;
+
   try {
-    return await Promise.race([
-      doInit(input, reporter),
-      new Promise<Hooks>((_, reject) =>
+    initPromise = doInit(input, reporter);
+    const { hooks } = await Promise.race([
+      initPromise,
+      new Promise<never>((_, reject) =>
         setTimeout(
           () => reject(new Error(`plugin init timed out after ${INIT_TIMEOUT_MS}ms`)),
           INIT_TIMEOUT_MS
         )
       ),
     ]);
+    return hooks;
   } catch (err) {
     reporter.error("[orch] init failed", err);
+    // If init eventually completes after the timeout, tear down the resources
+    // it created (snapshot timer, signal handlers) so they don't leak for the
+    // lifetime of the process.
+    if (initPromise) {
+      initPromise
+        .then(({ store }) => store.destroy())
+        .catch(() => {});
+    }
     // Return empty hooks so opencode keeps working without our tools.
     return {};
   }
 }
 
-async function doInit(input: PluginInput, reporter: Reporter): Promise<Hooks> {
+async function doInit(
+  input: PluginInput,
+  reporter: Reporter
+): Promise<{ hooks: Hooks; store: Store }> {
   // ── Initialize state store ──────────────────────────────────────
   const store = new Store(input.directory);
   await store.init();
@@ -86,9 +101,9 @@ async function doInit(input: PluginInput, reporter: Reporter): Promise<Hooks> {
       reporter,
     }),
 
-    "permission.ask": createPermissionHook(manager, fileLocks),
+    "permission.ask": createPermissionHook(manager, fileLocks, input.directory),
 
-    "tool.execute.after": createActivityHook(manager, activity),
+    "tool.execute.after": createActivityHook(manager, activity, input.directory),
   };
 
   // Graceful shutdown — flush state on process exit
@@ -100,5 +115,5 @@ async function doInit(input: PluginInput, reporter: Reporter): Promise<Hooks> {
   const toolCount = Object.keys(hooks.tool ?? {}).length;
   reporter.success("[orch]", `ready · ${toolCount} tools`);
 
-  return hooks;
+  return { hooks, store };
 }

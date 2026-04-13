@@ -60,10 +60,13 @@ export class Reporter {
 
   /** Report a failure. The user should see this. */
   error(title: string, error: unknown): void {
+    // Toast gets the short message only — wall-of-text stacks are unreadable.
+    // app.log and the file log get the full stack for postmortem.
     const message = formatError(error);
+    const detailed = formatErrorWithStack(error);
     this.toast(title, message, "error");
-    this.appLog("error", `${title} ${message}`);
-    this.fileLog("ERROR", title, message);
+    this.appLog("error", `${title} ${detailed}`);
+    this.fileLog("ERROR", title, detailed);
   }
 
   // ── Internal sinks ─────────────────────────────────────────────
@@ -105,9 +108,9 @@ export class Reporter {
   }
 }
 
+/** Short form for toasts — message only, no stack. */
 export function formatError(err: unknown): string {
   if (err instanceof Error) {
-    // Use the message; truncate stacks to avoid wall-of-text in toasts
     return err.message;
   }
   if (typeof err === "string") return err;
@@ -116,6 +119,14 @@ export function formatError(err: unknown): string {
   } catch {
     return String(err);
   }
+}
+
+/** Detailed form for log sinks — includes stack when available. */
+export function formatErrorWithStack(err: unknown): string {
+  if (err instanceof Error) {
+    return err.stack ?? err.message;
+  }
+  return formatError(err);
 }
 
 /** Wrap an async function so any throw is caught and logged via the reporter. */

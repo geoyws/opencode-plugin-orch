@@ -198,8 +198,8 @@ export async function createHarness(): Promise<Harness> {
     reporter,
   });
 
-  const permissionHook = createPermissionHook(manager, fileLocks);
-  const activityHook = createActivityHook(manager, activity);
+  const permissionHook = createPermissionHook(manager, fileLocks, tmpDir);
+  const activityHook = createActivityHook(manager, activity, tmpDir);
 
   return {
     tmpDir,

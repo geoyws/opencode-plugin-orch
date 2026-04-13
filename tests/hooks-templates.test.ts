@@ -64,7 +64,7 @@ describe("createPermissionHook — git safety", () => {
       tryAcquire: () => ({ ok: true }),
     } as any;
 
-    hook = createPermissionHook(mockManager, mockFileLocks);
+    hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
   });
 
   // ── Mutating commands — DENY ───────────────────────────────────────
@@ -279,7 +279,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       }),
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "write",
@@ -301,7 +301,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       tryAcquire: () => ({ ok: true }),
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "write",
@@ -323,7 +323,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       tryAcquire: () => ({ ok: false, holder: "architect" }),
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "edit",
@@ -345,7 +345,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       tryAcquire: () => ({ ok: true }),
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "edit",
@@ -367,7 +367,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       tryAcquire: () => ({ ok: false, holder: "reviewer" }),
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "write",
@@ -395,7 +395,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       },
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "write",
@@ -426,7 +426,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       },
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "read",
@@ -455,7 +455,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       },
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "write",
@@ -486,7 +486,7 @@ describe("createPermissionHook — ordering", () => {
       tryAcquire: () => ({ ok: true }),
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "bash",
@@ -507,7 +507,7 @@ describe("createPermissionHook — ordering", () => {
       tryAcquire: () => ({ ok: true }),
     } as any;
 
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       metadata: { command: "git push" },
@@ -547,7 +547,7 @@ describe("createPermissionHook — safety wrapper", () => {
       },
     } as any;
     const mockFileLocks = { tryAcquire: () => ({ ok: true }) } as any;
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({ metadata: { command: "git push" } });
     const output = { status: "ask" as const };
@@ -568,7 +568,7 @@ describe("createPermissionHook — safety wrapper", () => {
         throw new Error("lock explode");
       },
     } as any;
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({
       type: "write",
@@ -588,7 +588,7 @@ describe("createPermissionHook — safety wrapper", () => {
       },
     } as any;
     const mockFileLocks = { tryAcquire: () => ({ ok: true }) } as any;
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, tmpDir);
 
     await hook(makePermission({ metadata: { command: "git push" } }), {
       status: "ask",
@@ -610,7 +610,7 @@ describe("createPermissionHook — safety wrapper", () => {
       getMemberBySession: () => fakeMember,
     } as any;
     const mockFileLocks = { tryAcquire: () => ({ ok: true }) } as any;
-    const hook = createPermissionHook(mockManager, mockFileLocks);
+    const hook = createPermissionHook(mockManager, mockFileLocks, "/tmp");
 
     const input = makePermission({ metadata: { command: "git push origin main" } });
     const output: { status: "ask" | "deny" | "allow" } = { status: "ask" };
@@ -870,7 +870,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     const input = {
       tool: "bash",
@@ -901,7 +901,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     await hook(
       { tool: "bash", sessionID: "external-session", callID: "call-2", args: { command: "pwd" } },
@@ -925,7 +925,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     await hook(
       { tool: "write", sessionID: "member-session-1", callID: "call-3", args: { file_path: "/src/index.ts" } },
@@ -949,7 +949,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     await hook(
       { tool: "read", sessionID: "member-session-1", callID: "call-4", args: { path: "/src/config.ts" } },
@@ -973,7 +973,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     await hook(
       { tool: "grep", sessionID: "member-session-1", callID: "call-5", args: { pattern: "TODO" } },
@@ -997,7 +997,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     const longCommand = "find /root/work/src -name '*.ts' -exec grep -l 'TODO' {} +";
     await hook(
@@ -1024,7 +1024,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     await hook(
       { tool: "bash", sessionID: "member-session-1", callID: "call-7", args: { command: "ls -la" } },
@@ -1048,7 +1048,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     const longPath = "/very/long/path/that/exceeds/forty/characters/src/index.ts";
     await hook(
@@ -1073,7 +1073,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     await hook(
       { tool: "unknown", sessionID: "member-session-1", callID: "call-9", args: null },
@@ -1100,7 +1100,7 @@ describe("createActivityHook", () => {
         },
       } as any;
 
-      const hook = createActivityHook(mockManager, mockTracker);
+      const hook = createActivityHook(mockManager, mockTracker, tmp);
 
       // Must not throw
       await hook(
@@ -1133,7 +1133,7 @@ describe("createActivityHook", () => {
       },
     } as any;
 
-    const hook = createActivityHook(mockManager, mockTracker);
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
     await hook(
       { tool: "unknown", sessionID: "member-session-1", callID: "call-10", args: {} },
