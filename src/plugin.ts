@@ -65,18 +65,18 @@ export async function plugin(
     "tool.execute.after": createActivityHook(manager, activity),
   };
 
-  // Log startup
-  try {
-    await input.client.app.log({
+  // Log startup — fire and forget. Never await an HTTP call during plugin
+  // init, since the opencode server may not be fully ready to handle it yet,
+  // which would hang the TUI waiting for the plugin's init promise to resolve.
+  input.client.app
+    .log({
       body: {
         service: "opencode-plugin-orch",
         level: "info",
         message: "[orch] Plugin initialized",
       },
-    });
-  } catch {
-    // Non-critical
-  }
+    })
+    .catch(() => {});
 
   // Graceful shutdown — flush state on process exit
   const cleanup = () => { store.destroy(); };
