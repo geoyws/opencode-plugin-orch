@@ -1,6 +1,6 @@
 {
   "name": "opencode-plugin-orch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent team orchestration plugin for OpenCode — spawn parallel AI teammates, coordinate via message passing, manage shared task boards",
   "type": "module",
   "license": "MIT",
