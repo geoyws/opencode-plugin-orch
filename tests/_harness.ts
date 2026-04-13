@@ -22,6 +22,7 @@ import { createTools } from "../src/tools/index.js";
 import { createEventHook } from "../src/hooks/events.js";
 import { createPermissionHook } from "../src/hooks/permissions.js";
 import { createActivityHook } from "../src/hooks/activity-tracker.js";
+import { Reporter } from "../src/core/reporter.js";
 
 // ── Recorded SDK calls ──────────────────────────────────────────────
 export interface RecordedCall {
@@ -140,6 +141,7 @@ export interface Harness {
   escalation: EscalationManager;
   activity: ActivityTracker;
   templates: TemplateRegistry;
+  reporter: Reporter;
   tools: ReturnType<typeof createTools>;
   fireEvent: (event: Event) => Promise<void>;
   permissionHook: ReturnType<typeof createPermissionHook>;
@@ -171,6 +173,7 @@ export async function createHarness(): Promise<Harness> {
   const escalation = new EscalationManager(store, manager, ctx);
   const activity = new ActivityTracker();
   const templates = new TemplateRegistry();
+  const reporter = new Reporter(client, tmpDir);
 
   const tools = createTools({
     manager,
@@ -192,6 +195,7 @@ export async function createHarness(): Promise<Harness> {
     fileLocks,
     escalation,
     ctx,
+    reporter,
   });
 
   const permissionHook = createPermissionHook(manager, fileLocks);
@@ -210,6 +214,7 @@ export async function createHarness(): Promise<Harness> {
     escalation,
     activity,
     templates,
+    reporter,
     tools,
     fireEvent: (event: Event) => eventHook({ event }),
     permissionHook,

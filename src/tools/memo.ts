@@ -16,6 +16,7 @@ export function createMemoTool(manager: TeamManager, pad: Scratchpad): ToolDefin
       value: tool.schema.string().optional().describe("Memo value (for set)"),
     },
     async execute(args) {
+      try {
       const team = manager.requireTeam(args.team);
 
       switch (args.action) {
@@ -49,6 +50,9 @@ export function createMemoTool(manager: TeamManager, pad: Scratchpad): ToolDefin
 
         default:
           return `Unknown action: ${args.action}`;
+      }
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
     },
   });

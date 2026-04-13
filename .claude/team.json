@@ -1,22 +1,22 @@
 {
-  "name": "orch-tests",
+  "name": "orch-hardening",
   "members": [
     {
-      "name": "tools-tester",
+      "name": "plugin-hardener",
       "color": "blue",
-      "role": "Writes integration tests for orch_* tools using the shared mock SDK harness",
+      "role": "Wraps plugin.ts init in try/catch + 5s timeout, uses Reporter for startup/failure toasts, returns degraded hooks on failure",
       "model": "claude-opus-4-6"
     },
     {
-      "name": "events-tester",
+      "name": "hook-hardener",
       "color": "green",
-      "role": "Writes integration tests for the event hook (session.idle, session.error, message.updated) and the plugin entry point",
+      "role": "Wraps permissions.ts and activity-tracker.ts hooks in try/catch with Reporter so a hook throw never breaks tool execution",
       "model": "claude-opus-4-6"
     },
     {
-      "name": "e2e-runner",
+      "name": "tool-hardener",
       "color": "purple",
-      "role": "Writes true end-to-end tests using createOpencode() to start a real opencode server in-process",
+      "role": "Wraps all 9 tool execute() functions to return error message strings instead of throwing, so the LLM sees the error and can react",
       "model": "claude-opus-4-6"
     }
   ]

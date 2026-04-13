@@ -1,6 +1,7 @@
 import type { Permission } from "@opencode-ai/sdk";
 import type { TeamManager } from "../core/team-manager.js";
 import type { FileLockManager } from "../core/file-locks.js";
+import { logHookError } from "./_safe.js";
 
 // Git commands that mutate repository state — DENIED for members
 const GIT_MUTATING_PATTERNS = [
@@ -53,42 +54,49 @@ export function createPermissionHook(
     input: Permission,
     output: { status: "ask" | "deny" | "allow" }
   ): Promise<void> => {
-    const sessionID = input.sessionID;
+    try {
+      const sessionID = input.sessionID;
 
-    // Only enforce for member sessions
-    if (!manager.isMemberSession(sessionID)) return;
+      // Only enforce for member sessions
+      if (!manager.isMemberSession(sessionID)) return;
 
-    const member = manager.getMemberBySession(sessionID);
-    if (!member) return;
+      const member = manager.getMemberBySession(sessionID);
+      if (!member) return;
 
-    // ── Git safety ────────────────────────────────────────────────
-    // Check if this is a bash/shell permission with a git-mutating command
-    const command =
-      (input.metadata?.command as string) ??
-      (input.metadata?.bash as string) ??
-      (typeof input.pattern === "string" ? input.pattern : input.pattern?.[0]) ??
-      input.title ??
-      "";
+      // ── Git safety ────────────────────────────────────────────────
+      // Check if this is a bash/shell permission with a git-mutating command
+      const command =
+        (input.metadata?.command as string) ??
+        (input.metadata?.bash as string) ??
+        (typeof input.pattern === "string" ? input.pattern : input.pattern?.[0]) ??
+        input.title ??
+        "";
 
-    if (isGitMutating(command)) {
-      output.status = "deny";
-      return;
-    }
+      if (isGitMutating(command)) {
+        output.status = "deny";
+        return;
+      }
 
-    // ── File lock enforcement ─────────────────────────────────────
-    // Check write/edit tool calls for file conflicts
-    if (input.type === "write" || input.type === "edit") {
-      const filePath =
-        (input.metadata?.path as string) ??
-        (typeof input.pattern === "string" ? input.pattern : input.pattern?.[0]);
+      // ── File lock enforcement ─────────────────────────────────────
+      // Check write/edit tool calls for file conflicts
+      if (input.type === "write" || input.type === "edit") {
+        const filePath =
+          (input.metadata?.path as string) ??
+          (typeof input.pattern === "string" ? input.pattern : input.pattern?.[0]);
 
-      if (filePath) {
-        const result = fileLocks.tryAcquire(filePath, member.id, member.teamID);
-        if (!result.ok) {
-          output.status = "deny";
-          return;
+        if (filePath) {
+          const result = fileLocks.tryAcquire(filePath, member.id, member.teamID);
+          if (!result.ok) {
+            output.status = "deny";
+            return;
+          }
         }
       }
+    } catch (err) {
+      // Never crash the host. Leave output.status alone — the default is
+      // "ask", which is the safest fallback: never silently allow a denied
+      // operation, never block legitimate ones either.
+      logHookError("permission.ask", err);
     }
   };
 }

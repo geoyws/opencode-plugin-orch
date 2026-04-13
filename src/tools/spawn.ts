@@ -31,38 +31,42 @@ export function createSpawnTool(manager: TeamManager): ToolDefinition {
         .describe("Comma-separated file paths to pre-load into context"),
     },
     async execute(args) {
-      const team = manager.requireTeam(args.team);
+      try {
+        const team = manager.requireTeam(args.team);
 
-      const model =
-        args.providerID && args.modelID
-          ? { providerID: args.providerID, modelID: args.modelID }
+        const model =
+          args.providerID && args.modelID
+            ? { providerID: args.providerID, modelID: args.modelID }
+            : undefined;
+
+        const files = args.files
+          ? args.files.split(",").map((f) => f.trim()).filter(Boolean)
           : undefined;
 
-      const files = args.files
-        ? args.files.split(",").map((f) => f.trim()).filter(Boolean)
-        : undefined;
+        const member = await manager.spawnMember({
+          teamID: team.id,
+          role: args.role,
+          instructions: args.instructions,
+          agent: args.agent,
+          model,
+          files,
+        });
 
-      const member = await manager.spawnMember({
-        teamID: team.id,
-        role: args.role,
-        instructions: args.instructions,
-        agent: args.agent,
-        model,
-        files,
-      });
+        let output = `Spawned member "${member.role}" (id: ${member.id}, session: ${member.sessionID})`;
+        if (files?.length) {
+          output += `\nPre-loaded ${files.length} file(s) into context`;
+        }
+        if (model) {
+          output += `\nModel: ${model.providerID}/${model.modelID}`;
+        }
+        if (args.agent) {
+          output += `\nAgent: ${args.agent}`;
+        }
 
-      let output = `Spawned member "${member.role}" (id: ${member.id}, session: ${member.sessionID})`;
-      if (files?.length) {
-        output += `\nPre-loaded ${files.length} file(s) into context`;
+        return output;
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
-      if (model) {
-        output += `\nModel: ${model.providerID}/${model.modelID}`;
-      }
-      if (args.agent) {
-        output += `\nAgent: ${args.agent}`;
-      }
-
-      return output;
     },
   });
 }

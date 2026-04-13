@@ -14,18 +14,22 @@ export function createShutdownTool(manager: TeamManager): ToolDefinition {
         .describe("Role name to shutdown (omit to shutdown entire team)"),
     },
     async execute(args) {
-      const team = manager.requireTeam(args.team);
+      try {
+        const team = manager.requireTeam(args.team);
 
-      if (args.member) {
-        const member = manager.getMemberByRole(team.id, args.member);
-        if (!member) return `Member "${args.member}" not found in team "${team.name}"`;
+        if (args.member) {
+          const member = manager.getMemberByRole(team.id, args.member);
+          if (!member) return `Member "${args.member}" not found in team "${team.name}"`;
 
-        await manager.shutdownMember(member.id);
-        return `Member "${args.member}" shut down`;
+          await manager.shutdownMember(member.id);
+          return `Member "${args.member}" shut down`;
+        }
+
+        await manager.shutdownTeam(args.team);
+        return `Team "${team.name}" shut down (all members terminated)`;
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
-
-      await manager.shutdownTeam(args.team);
-      return `Team "${team.name}" shut down (all members terminated)`;
     },
   });
 }

@@ -13,12 +13,16 @@ export function createBroadcastTool(manager: TeamManager, bus: MessageBus): Tool
       content: tool.schema.string().describe("Message content"),
     },
     async execute(args, context) {
-      const team = manager.requireTeam(args.team);
-      const senderMember = manager.getMemberBySession(context.sessionID);
-      const fromRole = senderMember?.role ?? "lead";
+      try {
+        const team = manager.requireTeam(args.team);
+        const senderMember = manager.getMemberBySession(context.sessionID);
+        const fromRole = senderMember?.role ?? "lead";
 
-      const ids = bus.broadcast(team.name, fromRole, args.content);
-      return `Broadcast sent to ${ids.length} member(s)`;
+        const ids = bus.broadcast(team.name, fromRole, args.content);
+        return `Broadcast sent to ${ids.length} member(s)`;
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      }
     },
   });
 }

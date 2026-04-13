@@ -13,11 +13,36 @@ import { createTools } from "./tools/index.js";
 import { createEventHook } from "./hooks/events.js";
 import { createPermissionHook } from "./hooks/permissions.js";
 import { createActivityHook } from "./hooks/activity-tracker.js";
+import { Reporter } from "./core/reporter.js";
+
+const INIT_TIMEOUT_MS = 5000;
 
 export async function plugin(
   input: PluginInput,
   _options?: PluginOptions
 ): Promise<Hooks> {
+  // Reporter is the FIRST thing constructed — if anything else fails, we can
+  // still surface the error to the user via TUI toast + app.log + file log.
+  const reporter = new Reporter(input.client, input.directory);
+
+  try {
+    return await Promise.race([
+      doInit(input, reporter),
+      new Promise<Hooks>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`plugin init timed out after ${INIT_TIMEOUT_MS}ms`)),
+          INIT_TIMEOUT_MS
+        )
+      ),
+    ]);
+  } catch (err) {
+    reporter.error("[orch] init failed", err);
+    // Return empty hooks so opencode keeps working without our tools.
+    return {};
+  }
+}
+
+async function doInit(input: PluginInput, reporter: Reporter): Promise<Hooks> {
   // ── Initialize state store ──────────────────────────────────────
   const store = new Store(input.directory);
   await store.init();
@@ -58,6 +83,7 @@ export async function plugin(
       fileLocks,
       escalation,
       ctx: input,
+      reporter,
     }),
 
     "permission.ask": createPermissionHook(manager, fileLocks),
@@ -65,24 +91,14 @@ export async function plugin(
     "tool.execute.after": createActivityHook(manager, activity),
   };
 
-  // Log startup — fire and forget. Never await an HTTP call during plugin
-  // init, since the opencode server may not be fully ready to handle it yet,
-  // which would hang the TUI waiting for the plugin's init promise to resolve.
-  input.client.app
-    .log({
-      body: {
-        service: "opencode-plugin-orch",
-        level: "info",
-        message: "[orch] Plugin initialized",
-      },
-    })
-    .catch(() => {});
-
   // Graceful shutdown — flush state on process exit
   const cleanup = () => { store.destroy(); };
   process.on("beforeExit", cleanup);
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
+
+  const toolCount = Object.keys(hooks.tool ?? {}).length;
+  reporter.success("[orch]", `ready · ${toolCount} tools`);
 
   return hooks;
 }

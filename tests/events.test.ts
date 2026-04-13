@@ -13,6 +13,7 @@ import {
 } from "./_harness.js";
 import type { PluginInput } from "@opencode-ai/plugin";
 import { plugin } from "../src/plugin.js";
+import { Store } from "../src/state/store.js";
 
 // ── session.idle ─────────────────────────────────────────────────────
 describe("session.idle", () => {
@@ -445,8 +446,10 @@ describe("plugin() entry", () => {
         event: { type: "session.idle", properties: { sessionID: "x" } } as unknown as Parameters<NonNullable<typeof hooks.event>>[0]["event"],
       });
 
-      // Logged startup
-      expect(client.logs.some((l) => l.message.includes("initialized"))).toBe(true);
+      // Logged startup — Reporter.success() emits "ready · N tools"
+      expect(client.logs.some((l) => l.message.includes("ready"))).toBe(true);
+      // And shows a success toast
+      expect(client.toasts.some((t) => t.variant === "success" && t.message.includes("ready"))).toBe(true);
 
       // Trigger cleanup via beforeExit handler to clear the snapshot interval
       process.emit("beforeExit", 0);
@@ -454,4 +457,86 @@ describe("plugin() entry", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+});
+
+// ── Plugin init failure handling ─────────────────────────────────────
+// These tests are the whole point of the hardening work: make sure a
+// broken init surfaces loudly via a TUI toast AND returns valid (empty)
+// hooks so the opencode TUI stays usable.
+describe("plugin() init failure handling", () => {
+  const originalInit = Store.prototype.init;
+
+  afterEach(() => {
+    Store.prototype.init = originalInit;
+  });
+
+  function makeInput(): { input: PluginInput; client: MockClient; tmpDir: string } {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-plugin-fail-"));
+    const client = new MockClient();
+    const input = {
+      client,
+      project: { id: "test-project" },
+      directory: tmpDir,
+      worktree: tmpDir,
+      serverUrl: new URL("http://localhost:0"),
+      $: null,
+    } as unknown as PluginInput;
+    return { input, client, tmpDir };
+  }
+
+  test("init throw → returns empty hooks and shows error toast", async () => {
+    Store.prototype.init = async function () {
+      throw new Error("boom-from-store");
+    };
+
+    const { input, client, tmpDir } = makeInput();
+    try {
+      const hooks = await plugin(input);
+
+      // Must not have blown up, and must not register tools.
+      expect(hooks).toBeDefined();
+      expect(hooks.tool).toBeUndefined();
+
+      // Error toast was raised with the failure reason.
+      const errorToast = client.toasts.find(
+        (t) => t.variant === "error" && t.message.includes("boom-from-store")
+      );
+      expect(errorToast).toBeDefined();
+      expect(errorToast!.title).toContain("init failed");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test(
+    "init hang → times out, returns empty hooks, error toast mentions timeout",
+    async () => {
+      Store.prototype.init = function () {
+        // Never resolves — simulates a pathological hang.
+        return new Promise<void>(() => {});
+      };
+
+      const { input, client, tmpDir } = makeInput();
+      try {
+        const start = Date.now();
+        const hooks = await plugin(input);
+        const elapsed = Date.now() - start;
+
+        // Should resolve around the 5s timeout, not hang forever.
+        expect(elapsed).toBeGreaterThanOrEqual(4500);
+        expect(elapsed).toBeLessThan(8000);
+
+        expect(hooks.tool).toBeUndefined();
+
+        const errorToast = client.toasts.find(
+          (t) => t.variant === "error" && t.message.includes("timed out")
+        );
+        expect(errorToast).toBeDefined();
+        expect(errorToast!.title).toContain("init failed");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    },
+    { timeout: 10000 }
+  );
 });

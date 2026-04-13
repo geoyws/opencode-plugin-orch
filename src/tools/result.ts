@@ -22,6 +22,7 @@ export function createResultTool(
         .describe("Output format (default: summary)"),
     },
     async execute(args) {
+      try {
       const team = manager.requireTeam(args.team);
       const tasks = board.listTasks(team.id);
       const completed = tasks.filter((t) => t.status === "completed");
@@ -104,6 +105,9 @@ export function createResultTool(
       }
 
       return lines.join("\n");
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      }
     },
   });
 }

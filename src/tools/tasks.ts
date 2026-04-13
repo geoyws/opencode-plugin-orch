@@ -36,6 +36,7 @@ export function createTasksTool(manager: TeamManager, board: TaskBoard, store: S
         .describe("Filter by status (for list)"),
     },
     async execute(args, context) {
+      try {
       const team = manager.requireTeam(args.team);
 
       switch (args.action) {
@@ -92,6 +93,9 @@ export function createTasksTool(manager: TeamManager, board: TaskBoard, store: S
 
         default:
           return `Unknown action: ${args.action}`;
+      }
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
     },
   });

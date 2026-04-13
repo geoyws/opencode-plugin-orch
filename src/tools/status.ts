@@ -25,6 +25,7 @@ export function createStatusTool(
         .describe("Show detailed task list (default: false)"),
     },
     async execute(args) {
+      try {
       const team = manager.requireTeam(args.team);
       const members = manager.listMembers(team.id);
       const tasks = board.listTasks(team.id);
@@ -80,6 +81,9 @@ export function createStatusTool(
       }
 
       return lines.join("\n");
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      }
     },
   });
 }

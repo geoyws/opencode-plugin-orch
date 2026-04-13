@@ -7,6 +7,7 @@ import type { CostTracker } from "../core/cost-tracker.js";
 import type { FileLockManager } from "../core/file-locks.js";
 import type { EscalationManager } from "../core/escalation.js";
 import type { Store } from "../state/store.js";
+import type { Reporter } from "../core/reporter.js";
 
 interface EventDeps {
   store: Store;
@@ -17,10 +18,11 @@ interface EventDeps {
   fileLocks: FileLockManager;
   escalation: EscalationManager;
   ctx: PluginInput;
+  reporter: Reporter;
 }
 
 export function createEventHook(deps: EventDeps) {
-  const { store, manager, bus, board, costs, fileLocks, escalation, ctx } = deps;
+  const { store, manager, bus, board, costs, fileLocks, escalation, ctx, reporter } = deps;
 
   return async ({ event }: { event: Event }): Promise<void> => {
     try {
@@ -231,17 +233,7 @@ export function createEventHook(deps: EventDeps) {
       }
     }
     } catch (err) {
-      try {
-        await ctx.client.app.log({
-          body: {
-            service: "opencode-plugin-orch",
-            level: "error",
-            message: `[orch] Event hook error: ${err}`,
-          },
-        });
-      } catch {
-        // Last resort — don't crash
-      }
+      reporter.error("[orch] event hook error", err);
     }
   };
 }

@@ -114,12 +114,12 @@ describe("orch_spawn", () => {
       { team: "t1", role: "coder", instructions: "first" },
       makeToolContext("lead-session")
     );
-    await expect(
-      h.tools.orch_spawn.execute(
-        { team: "t1", role: "coder", instructions: "second" },
-        makeToolContext("lead-session")
-      )
-    ).rejects.toThrow(/already exists/);
+    const result = await h.tools.orch_spawn.execute(
+      { team: "t1", role: "coder", instructions: "second" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Error:");
+    expect(result).toContain("already exists");
   });
 
   test("pre-loads files into context via file.read + session.prompt", async () => {
@@ -218,7 +218,7 @@ describe("orch_message", () => {
   });
 
   test("errors when backpressure limit reached", async () => {
-    // limit is 2 — two messages fit, third throws
+    // limit is 2 — two messages fit, third returns an error string
     await h.tools.orch_message.execute(
       { team: "msg-team", to: "alpha", content: "1" },
       makeToolContext("lead-session")
@@ -227,12 +227,12 @@ describe("orch_message", () => {
       { team: "msg-team", to: "alpha", content: "2" },
       makeToolContext("lead-session")
     );
-    await expect(
-      h.tools.orch_message.execute(
-        { team: "msg-team", to: "alpha", content: "3" },
-        makeToolContext("lead-session")
-      )
-    ).rejects.toThrow(/Backpressure limit/);
+    const result = await h.tools.orch_message.execute(
+      { team: "msg-team", to: "alpha", content: "3" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Error:");
+    expect(result).toContain("Backpressure limit");
   });
 });
 
@@ -402,18 +402,18 @@ describe("orch_tasks", () => {
     expect(list).not.toContain("[available]  todo");
   });
 
-  test("add with unknown dependency throws", async () => {
-    await expect(
-      h.tools.orch_tasks.execute(
-        {
-          team: "tt",
-          action: "add",
-          title: "dependent",
-          dependsOn: "task_does_not_exist",
-        },
-        makeToolContext("lead-session")
-      )
-    ).rejects.toThrow(/does not exist/);
+  test("add with unknown dependency returns error string", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add",
+        title: "dependent",
+        dependsOn: "task_does_not_exist",
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Error:");
+    expect(result).toContain("does not exist");
   });
 
   test("add without title errors", async () => {
@@ -728,5 +728,74 @@ describe("orch_result", () => {
     expect(parsed.results[0].title).toBe("done-one");
     expect(parsed.results[0].assignee).toBe("worker");
     expect(parsed.failures[0].title).toBe("broken-one");
+  });
+});
+
+// ─── error-string contract ───────────────────────────────────────────
+// Internal failures should be returned to the caller as "Error: ..."
+// strings rather than thrown, so the LLM can read and react.
+describe("error-string contract", () => {
+  let h: Harness;
+  beforeEach(async () => { h = await createHarness(); });
+  afterEach(() => { h.cleanup(); });
+
+  test("orch_message returns error when recipient role is unknown", async () => {
+    h.manager.createTeam("eteam", "lead-session");
+    const result = await h.tools.orch_message.execute(
+      { team: "eteam", to: "ghost", content: "hi" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toMatch(/^Error:/);
+    expect(result).toContain("ghost");
+  });
+
+  test("orch_message returns error when team does not exist", async () => {
+    const result = await h.tools.orch_message.execute(
+      { team: "nope", to: "x", content: "hi" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toMatch(/^Error:/);
+  });
+
+  test("orch_broadcast returns error when team does not exist", async () => {
+    const result = await h.tools.orch_broadcast.execute(
+      { team: "nope", content: "hi" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toMatch(/^Error:/);
+  });
+
+  test("orch_status returns error when team does not exist", async () => {
+    const result = await h.tools.orch_status.execute(
+      { team: "nope" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toMatch(/^Error:/);
+  });
+
+  test("orch_shutdown returns error when team does not exist", async () => {
+    const result = await h.tools.orch_shutdown.execute(
+      { team: "nope" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toMatch(/^Error:/);
+  });
+
+  test("orch_tasks claim from non-member returns error string", async () => {
+    const team = h.manager.createTeam("etasks", "lead-session");
+    await h.tools.orch_spawn.execute(
+      { team: "etasks", role: "worker", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "etasks", action: "add", title: "t" },
+      makeToolContext("lead-session")
+    );
+    const [task] = h.store.listTasks(team.id);
+    const result = await h.tools.orch_tasks.execute(
+      { team: "etasks", action: "claim", taskID: task.id },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Error: Only team members can claim tasks");
   });
 });

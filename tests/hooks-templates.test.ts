@@ -521,6 +521,108 @@ describe("createPermissionHook — ordering", () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════
+// 3b. Permission hook — safety: internal throws must never crash
+// ═════════════════════════════════════════════════════════════════════════
+
+describe("createPermissionHook — safety wrapper", () => {
+  let tmpDir: string;
+  let origCwd: string;
+
+  beforeEach(() => {
+    origCwd = process.cwd();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-safe-perm-"));
+    process.chdir(tmpDir);
+  });
+
+  afterEach(() => {
+    process.chdir(origCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("throwing getMemberBySession does NOT throw out of the hook and leaves status unchanged", async () => {
+    const mockManager = {
+      isMemberSession: () => true,
+      getMemberBySession: () => {
+        throw new Error("boom manager");
+      },
+    } as any;
+    const mockFileLocks = { tryAcquire: () => ({ ok: true }) } as any;
+    const hook = createPermissionHook(mockManager, mockFileLocks);
+
+    const input = makePermission({ metadata: { command: "git push" } });
+    const output = { status: "ask" as const };
+
+    // Must not throw
+    await hook(input, output);
+    // Status unchanged — default "ask" is the safe fallback
+    expect(output.status).toBe("ask");
+  });
+
+  test("throwing fileLocks.tryAcquire does NOT throw and leaves status unchanged", async () => {
+    const mockManager = {
+      isMemberSession: () => true,
+      getMemberBySession: () => fakeMember,
+    } as any;
+    const mockFileLocks = {
+      tryAcquire: () => {
+        throw new Error("lock explode");
+      },
+    } as any;
+    const hook = createPermissionHook(mockManager, mockFileLocks);
+
+    const input = makePermission({
+      type: "write",
+      metadata: { path: "/src/index.ts" },
+    });
+    const output = { status: "ask" as const };
+
+    await hook(input, output);
+    expect(output.status).toBe("ask");
+  });
+
+  test("an internal throw writes to .opencode/plugin-orch/hooks.log", async () => {
+    const mockManager = {
+      isMemberSession: () => true,
+      getMemberBySession: () => {
+        throw new Error("boom for log");
+      },
+    } as any;
+    const mockFileLocks = { tryAcquire: () => ({ ok: true }) } as any;
+    const hook = createPermissionHook(mockManager, mockFileLocks);
+
+    await hook(makePermission({ metadata: { command: "git push" } }), {
+      status: "ask",
+    });
+
+    const logPath = path.join(tmpDir, ".opencode", "plugin-orch", "hooks.log");
+    expect(fs.existsSync(logPath)).toBe(true);
+    const contents = fs.readFileSync(logPath, "utf8");
+    expect(contents).toContain("permission.ask");
+    expect(contents).toContain("boom for log");
+  });
+
+  test("a denied git push is NOT silently allowed after a throw (status stays 'ask', never 'allow')", async () => {
+    // Throw *before* the git check runs, to simulate an unexpected error.
+    const mockManager = {
+      isMemberSession: () => {
+        throw new Error("isMemberSession exploded");
+      },
+      getMemberBySession: () => fakeMember,
+    } as any;
+    const mockFileLocks = { tryAcquire: () => ({ ok: true }) } as any;
+    const hook = createPermissionHook(mockManager, mockFileLocks);
+
+    const input = makePermission({ metadata: { command: "git push origin main" } });
+    const output: { status: "ask" | "deny" | "allow" } = { status: "ask" };
+    await hook(input, output);
+
+    // Crucially — we must NOT have upgraded status to "allow"
+    expect(output.status).not.toBe("allow");
+    expect(output.status).toBe("ask");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
 // 4. Template registry
 // ═════════════════════════════════════════════════════════════════════════
 
@@ -979,6 +1081,42 @@ describe("createActivityHook", () => {
     );
 
     expect(capturedTarget).toBe("");
+  });
+
+  test("swallows internal errors and logs to hooks.log", async () => {
+    const origCwd = process.cwd();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "orch-safe-act-"));
+    process.chdir(tmp);
+    try {
+      const mockManager = {
+        getMemberBySession: () => {
+          throw new Error("boom activity");
+        },
+      } as any;
+
+      const mockTracker = {
+        record: () => {
+          throw new Error("should not be called");
+        },
+      } as any;
+
+      const hook = createActivityHook(mockManager, mockTracker);
+
+      // Must not throw
+      await hook(
+        { tool: "bash", sessionID: "s", callID: "c", args: { command: "ls" } },
+        { title: "bash", output: "", metadata: {} }
+      );
+
+      const logPath = path.join(tmp, ".opencode", "plugin-orch", "hooks.log");
+      expect(fs.existsSync(logPath)).toBe(true);
+      const contents = fs.readFileSync(logPath, "utf8");
+      expect(contents).toContain("tool.execute.after");
+      expect(contents).toContain("boom activity");
+    } finally {
+      process.chdir(origCwd);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("handles empty args object gracefully", async () => {

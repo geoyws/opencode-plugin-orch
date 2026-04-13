@@ -14,14 +14,17 @@ export function createMessageTool(manager: TeamManager, bus: MessageBus): ToolDe
       content: tool.schema.string().describe("Message content"),
     },
     async execute(args, context) {
-      const team = manager.requireTeam(args.team);
+      try {
+        const team = manager.requireTeam(args.team);
 
-      // Determine sender role
-      const senderMember = manager.getMemberBySession(context.sessionID);
-      const fromRole = senderMember?.role ?? "lead";
+        const senderMember = manager.getMemberBySession(context.sessionID);
+        const fromRole = senderMember?.role ?? "lead";
 
-      const msgID = bus.send(team.name, fromRole, args.to, args.content);
-      return `Message sent to "${args.to}" (id: ${msgID})`;
+        const msgID = bus.send(team.name, fromRole, args.to, args.content);
+        return `Message sent to "${args.to}" (id: ${msgID})`;
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      }
     },
   });
 }

@@ -39,6 +39,7 @@ export function createCreateTool(manager: TeamManager, templates: TemplateRegist
         .describe("Max retries per escalation level (default: 1)"),
     },
     async execute(args, context) {
+      try {
       const config: Partial<TeamConfig> = {
         workStealing: args.workStealing,
         backpressureLimit: args.backpressureLimit,
@@ -99,6 +100,9 @@ export function createCreateTool(manager: TeamManager, templates: TemplateRegist
       }
 
       return output;
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      }
     },
   });
 }
