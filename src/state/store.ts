@@ -213,6 +213,13 @@ export class Store {
     this.appendEvent("teams.jsonl", "team.deleted", { id });
   }
 
+  updateTeamInboxSeen(teamID: string, timestamp: number): void {
+    const team = this.teams.get(teamID);
+    if (!team) return;
+    const updated: Team = { ...team, leadInboxLastSeenAt: timestamp };
+    this.appendEvent("teams.jsonl", "team.updated", updated);
+  }
+
   getTeam(id: string): Team | undefined {
     return this.teams.get(id);
   }

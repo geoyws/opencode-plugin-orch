@@ -51,6 +51,11 @@ export const Team = z.object({
   leadSessionID: z.string(),
   config: TeamConfig,
   createdAt: z.number(),
+  // Lead's orch_inbox read cursor. Peer messages with createdAt greater than
+  // this are unread. Defaults to 0 so teams stored before this field existed
+  // still load — loadSnapshot bypasses Zod, so the default applies only to
+  // new Team() paths; tool code must still tolerate undefined.
+  leadInboxLastSeenAt: z.number().default(0),
 });
 export type Team = z.infer<typeof Team>;
 

@@ -881,3 +881,166 @@ describe("error-string contract", () => {
     expect(result).toBe("Error: Only team members can claim tasks");
   });
 });
+
+// ─── orch_inbox ───────────────────────────────────────────────────────
+describe("orch_inbox", () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await createHarness();
+    h.manager.createTeam("ib", "lead-session");
+    for (const role of ["alpha", "beta", "gamma"]) {
+      await h.tools.orch_spawn.execute(
+        { team: "ib", role, instructions: "x" },
+        makeToolContext("lead-session")
+      );
+    }
+    // Nudge the clock past createdAt so subsequent peer messages register
+    // as "after" the initial lastSeen cursor on every platform.
+    await new Promise((r) => setTimeout(r, 2));
+  });
+  afterEach(() => { h.cleanup(); });
+
+  test("new team starts with 0 unread peer messages", async () => {
+    const result = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "count" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("0 unread peer messages");
+  });
+
+  test("member→member DM shows as 1 unread peer message (singular)", async () => {
+    const team = h.store.getTeamByName("ib")!;
+    const alpha = h.store.getMemberByRole(team.id, "alpha")!;
+    await h.tools.orch_message.execute(
+      { team: "ib", to: "beta", content: "hi beta" },
+      makeToolContext(alpha.sessionID)
+    );
+    const result = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "count" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("1 unread peer message");
+  });
+
+  test("list returns unread messages in from → to format with age", async () => {
+    const team = h.store.getTeamByName("ib")!;
+    const alpha = h.store.getMemberByRole(team.id, "alpha")!;
+    await h.tools.orch_message.execute(
+      { team: "ib", to: "beta", content: "hello beta" },
+      makeToolContext(alpha.sessionID)
+    );
+    const result = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "list" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('Inbox for "ib" (1 unread)');
+    expect(result).toContain("alpha → beta: hello beta");
+    expect(result).toMatch(/\[\d+[smhd] ago\]/);
+  });
+
+  test("list --all returns the same messages after mark_read", async () => {
+    const team = h.store.getTeamByName("ib")!;
+    const alpha = h.store.getMemberByRole(team.id, "alpha")!;
+    await h.tools.orch_message.execute(
+      { team: "ib", to: "beta", content: "historic" },
+      makeToolContext(alpha.sessionID)
+    );
+    await h.tools.orch_inbox.execute(
+      { team: "ib", action: "mark_read" },
+      makeToolContext("lead-session")
+    );
+
+    // Default list → nothing unread
+    const unread = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "list" },
+      makeToolContext("lead-session")
+    );
+    expect(unread).toContain("No unread peer messages");
+
+    // list with all=true → historic message is still visible
+    const all = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "list", all: true },
+      makeToolContext("lead-session")
+    );
+    expect(all).toContain('Inbox for "ib" (1 total)');
+    expect(all).toContain("alpha → beta: historic");
+  });
+
+  test("mark_read clears unread count and list reports empty", async () => {
+    const team = h.store.getTeamByName("ib")!;
+    const alpha = h.store.getMemberByRole(team.id, "alpha")!;
+    await h.tools.orch_message.execute(
+      { team: "ib", to: "beta", content: "m1" },
+      makeToolContext(alpha.sessionID)
+    );
+    await h.tools.orch_message.execute(
+      { team: "ib", to: "gamma", content: "m2" },
+      makeToolContext(alpha.sessionID)
+    );
+
+    const marked = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "mark_read" },
+      makeToolContext("lead-session")
+    );
+    expect(marked).toBe("Marked 2 messages as read");
+
+    const count = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "count" },
+      makeToolContext("lead-session")
+    );
+    expect(count).toBe("0 unread peer messages");
+
+    const list = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "list" },
+      makeToolContext("lead-session")
+    );
+    expect(list).toContain("No unread peer messages");
+  });
+
+  test("lead-originated DMs never appear in the inbox", async () => {
+    // lead → alpha (not a peer message)
+    await h.tools.orch_message.execute(
+      { team: "ib", to: "alpha", content: "from the lead" },
+      makeToolContext("lead-session")
+    );
+    const count = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "count" },
+      makeToolContext("lead-session")
+    );
+    expect(count).toBe("0 unread peer messages");
+
+    const list = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "list", all: true },
+      makeToolContext("lead-session")
+    );
+    expect(list).toContain("Inbox is empty");
+    expect(list).not.toContain("from the lead");
+  });
+
+  test("list with limit caps the result size", async () => {
+    const team = h.store.getTeamByName("ib")!;
+    const alpha = h.store.getMemberByRole(team.id, "alpha")!;
+    for (const c of ["m1", "m2", "m3", "m4"]) {
+      await h.tools.orch_message.execute(
+        { team: "ib", to: "beta", content: c },
+        makeToolContext(alpha.sessionID)
+      );
+    }
+    const result = await h.tools.orch_inbox.execute(
+      { team: "ib", action: "list", limit: 2 },
+      makeToolContext("lead-session")
+    );
+    // Header reports 2 unread (the capped size), body has exactly 2 message rows
+    expect(result).toContain("(2 unread)");
+    const bodyLines = result.split("\n").filter((l) => l.trim().startsWith("["));
+    expect(bodyLines).toHaveLength(2);
+  });
+
+  test("returns Error for non-existent team", async () => {
+    const result = await h.tools.orch_inbox.execute(
+      { team: "ghost", action: "count" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('Error: Team "ghost" not found');
+  });
+});

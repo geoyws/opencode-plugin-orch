@@ -19,6 +19,7 @@ export class TeamManager {
     if (this.store.getTeamByName(name)) {
       throw new Error(`Team "${name}" already exists`);
     }
+    const now = Date.now();
     const team: Team = {
       id: genID("team"),
       name,
@@ -29,7 +30,10 @@ export class TeamManager {
         budgetLimit: config.budgetLimit,
         escalation: config.escalation,
       },
-      createdAt: Date.now(),
+      createdAt: now,
+      // Start the lead's inbox cursor at creation time — any peer message
+      // that arrives after this counts as unread.
+      leadInboxLastSeenAt: now,
     };
     this.store.createTeam(team);
     return team;

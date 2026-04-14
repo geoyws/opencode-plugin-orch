@@ -996,6 +996,33 @@ describe("Store persistence", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test("updateTeamInboxSeen persists across destroy + re-init", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-test-"));
+
+    const store1 = new Store(tmpDir);
+    await store1.init();
+    const team: Team = {
+      id: "team_ib1",
+      name: "ib-persist",
+      leadSessionID: "lead-sess",
+      config: { workStealing: true, backpressureLimit: 5 },
+      createdAt: 1000,
+      leadInboxLastSeenAt: 1000,
+    };
+    store1.createTeam(team);
+    store1.updateTeamInboxSeen("team_ib1", 9999);
+    store1.destroy();
+
+    const store2 = new Store(tmpDir);
+    await store2.init();
+    const reloaded = store2.getTeam("team_ib1");
+    expect(reloaded).toBeDefined();
+    expect(reloaded?.leadInboxLastSeenAt).toBe(9999);
+    store2.destroy();
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   test("messages persist and can be queried after re-init", async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-test-"));
 
