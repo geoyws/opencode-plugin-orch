@@ -70,10 +70,16 @@ This issue is the real reason the plugin appeared broken under `opencode run`. E
 ## References
 
 - **Plugin loader bug evidence**: `~/.local/share/opencode/log/2026-04-14T020438.log` — contains `WARN ... plugin has no server entrypoint`.
-- **Passing minimax smoke test evidence**: `docs/adr/evidence-live-smoke-test.log` (captured `opencode run --model minimax-coding-plan/MiniMax-M2.7-highspeed --print-logs --format json` at 2026-04-14T03:02:54, exit 0). Key lines:
+- **Passing minimax smoke test evidence** (single tool): `docs/adr/evidence-live-smoke-test.log` (captured `opencode run --model minimax-coding-plan/MiniMax-M2.7-highspeed --print-logs --format json` at 2026-04-14T03:02:54, exit 0). Key lines:
   - `INFO [orch] ready · 9 tools`
   - `{"type":"tool_use", "tool":"orch_create", "state":{"status":"completed", "output":"Team \"lead-smoke-1\" created (id: team_mny1dyap_1)"}}`
   - `{"type":"text", "text":"Team \"lead-smoke-1\" created (id: team_mny1dyap_1)"}`
+- **Passing full e2e evidence** (spawn + status + shutdown): `docs/adr/evidence-live-spawn-e2e.log` (captured 2026-04-14T06:38:23, exit 0). Verified:
+  - `orch_create` → `Team "e2e-live" created (id: team_mny92zxv_1)`
+  - `orch_spawn` → `Spawned member "echoer" (id: member_mny931lm_2, session: ses_275497426ffeuFFFRcm5PFdsG9)` (real child session created)
+  - `orch_status` → powerline output with the echoer member in `initializing` state AND the new `Recent messages: (none)` section rendered
+  - `orch_shutdown` → `Team "e2e-live" shut down (all members terminated)`
+  - All 4 tool calls came back as real LLM `tool_use` events (not just registration), final text response echoes every tool output verbatim
 - **Gemma 4 MoE**: no positive or negative log evidence captured on this box. Runs during task #3 were inconclusive. The openrouter `:free` 429 hypothesis is not directly observed — if verification becomes a hard requirement, re-run with `--print-logs` and capture the raw output.
 - **Fix commit**: adds `"./server"` subpath to `package.json` `exports`.
 - **Memory entry**: `/root/.claude/projects/-root-work-src/memory/project_model_choices.md`.
