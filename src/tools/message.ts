@@ -2,7 +2,10 @@ import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { MessageBus } from "../core/message-bus.js";
 
-export function createMessageTool(manager: TeamManager, bus: MessageBus): ToolDefinition {
+export function createMessageTool(
+  manager: TeamManager,
+  bus: MessageBus
+): ToolDefinition {
   return tool({
     description:
       "Send a message to a specific team member by role name. If the member is idle, they are auto-woken to process it. " +
@@ -16,10 +19,8 @@ export function createMessageTool(manager: TeamManager, bus: MessageBus): ToolDe
     async execute(args, context) {
       try {
         const team = manager.requireTeam(args.team);
-
         const senderMember = manager.getMemberBySession(context.sessionID);
         const fromRole = senderMember?.role ?? "lead";
-
         const msgID = bus.send(team.name, fromRole, args.to, args.content);
         return `Message sent to "${args.to}" (id: ${msgID})`;
       } catch (err) {

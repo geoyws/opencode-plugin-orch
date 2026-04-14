@@ -571,6 +571,88 @@ describe("orch_status", () => {
     expect(result).toContain("Budget");
     expect(result).toContain("95%");
   });
+
+  test("surfaces recent peer messages in output", async () => {
+    const team = h.store.getTeamByName("st")!;
+    const reviewer = h.store.getMemberByRole(team.id, "reviewer")!;
+    await h.tools.orch_message.execute(
+      { team: "st", to: "coder", content: "please refactor this" },
+      makeToolContext(reviewer.sessionID)
+    );
+    const result = await h.tools.orch_status.execute(
+      { team: "st" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Recent messages:");
+    expect(result).toContain("reviewer → coder");
+    expect(result).toContain("please refactor this");
+  });
+
+  test("lead→member messages are NOT shown in Recent messages", async () => {
+    await h.tools.orch_message.execute(
+      { team: "st", to: "coder", content: "lead-says-hi" },
+      makeToolContext("lead-session")
+    );
+    const result = await h.tools.orch_status.execute(
+      { team: "st" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Recent messages: (none)");
+    expect(result).not.toContain("lead-says-hi");
+  });
+
+  test("verbose shows untruncated content, non-verbose truncates", async () => {
+    const team = h.store.getTeamByName("st")!;
+    const reviewer = h.store.getMemberByRole(team.id, "reviewer")!;
+    const long = "x".repeat(120);
+    await h.tools.orch_message.execute(
+      { team: "st", to: "coder", content: `big-${long}` },
+      makeToolContext(reviewer.sessionID)
+    );
+
+    // Short mode: content is truncated with ellipsis, full long string absent
+    const short = await h.tools.orch_status.execute(
+      { team: "st" },
+      makeToolContext("lead-session")
+    );
+    expect(short).toContain("Recent messages:");
+    expect(short).toContain("…");
+    expect(short).not.toContain(long);
+
+    // Verbose mode: full content present, no ellipsis on this line
+    const verbose = await h.tools.orch_status.execute(
+      { team: "st", verbose: true },
+      makeToolContext("lead-session")
+    );
+    expect(verbose).toContain("Recent messages:");
+    expect(verbose).toContain(`big-${long}`);
+  });
+
+  test("Recent messages shows broadcast sender by role (not raw id)", async () => {
+    const team = h.store.getTeamByName("st")!;
+    const reviewer = h.store.getMemberByRole(team.id, "reviewer")!;
+    await h.tools.orch_broadcast.execute(
+      { team: "st", content: "team, please review" },
+      makeToolContext(reviewer.sessionID)
+    );
+    const result = await h.tools.orch_status.execute(
+      { team: "st" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Recent messages:");
+    expect(result).toContain("reviewer →");
+    expect(result).toContain("team, please review");
+    // The raw member id must NOT leak into the rendered line
+    expect(result).not.toContain(reviewer.id);
+  });
+
+  test("Recent messages shows (none) when no peer traffic", async () => {
+    const result = await h.tools.orch_status.execute(
+      { team: "st" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Recent messages: (none)");
+  });
 });
 
 // ─── orch_shutdown ────────────────────────────────────────────────────

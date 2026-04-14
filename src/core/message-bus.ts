@@ -37,6 +37,23 @@ export class MessageBus {
     };
     this.store.addMessage(msg);
 
+    // Peer DM visibility: surface member→member traffic to the lead via a
+    // fire-and-forget toast. Lead-originated sends are skipped — the lead
+    // already knows what they just sent.
+    if (fromMember) {
+      const preview = content.length > 60 ? content.slice(0, 57) + "..." : content;
+      this.ctx.client.tui
+        .showToast({
+          body: {
+            title: "[orch]",
+            message: `${fromMember.role} → ${toMember.role}: ${preview}`,
+            variant: "info",
+            duration: 4000,
+          },
+        })
+        .catch(() => {});
+    }
+
     // If member is ready (idle), auto-wake
     if (toMember.state === "ready") {
       this.deliverMessages(toMember.id).catch(() => {});
@@ -49,6 +66,9 @@ export class MessageBus {
     const team = this.store.getTeamByName(teamID) ?? this.store.getTeam(teamID);
     if (!team) throw new Error(`Team not found: ${teamID}`);
 
+    // Resolve sender once so the stored `from` field matches send()'s format
+    // (member id, or the literal "lead" when the lead originates the broadcast).
+    const fromMember = this.store.getMemberByRole(team.id, fromRole);
     const members = this.store.listMembers(team.id);
     const ids: string[] = [];
 
@@ -62,7 +82,7 @@ export class MessageBus {
       const msg = {
         id: genID("msg"),
         teamID: team.id,
-        from: fromRole,
+        from: fromMember?.id ?? "lead",
         to: member.id,
         content,
         delivered: false,
@@ -74,6 +94,22 @@ export class MessageBus {
       if (member.state === "ready") {
         this.deliverMessages(member.id).catch(() => {});
       }
+    }
+
+    // Peer broadcast visibility — one toast per broadcast call, not per
+    // recipient. Lead-originated broadcasts are skipped (lead already knows).
+    if (ids.length > 0 && fromMember) {
+      const preview = content.length > 60 ? content.slice(0, 57) + "..." : content;
+      this.ctx.client.tui
+        .showToast({
+          body: {
+            title: "[orch]",
+            message: `${fromRole} → all (${ids.length}): ${preview}`,
+            variant: "info",
+            duration: 4000,
+          },
+        })
+        .catch(() => {});
     }
 
     return ids;

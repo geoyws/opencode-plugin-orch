@@ -362,12 +362,14 @@ describe("MessageBus", () => {
 
   let mockCtx: any;
   let mockManager: any;
+  let toasts: Array<{ title?: string; message: string; variant: string; duration?: number }>;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-test-"));
     store = new Store(tmpDir);
     await store.init();
 
+    toasts = [];
     // Minimal mocks — we never call delivery in these tests because
     // member states are set so auto-wake doesn't trigger, or because
     // the mock promptAsync resolves harmlessly.
@@ -375,6 +377,12 @@ describe("MessageBus", () => {
       client: {
         session: {
           promptAsync: async () => ({ data: {} }),
+        },
+        tui: {
+          showToast: async (params: any) => {
+            if (params?.body) toasts.push(params.body);
+            return { data: true };
+          },
         },
       },
     };
@@ -455,6 +463,79 @@ describe("MessageBus", () => {
     expect(() =>
       bus.send(team.id, "sender", "receiver", "msg4"),
     ).toThrow(/Backpressure limit reached/);
+  });
+
+  test("peer send fires a toast to the lead with role-formatted preview", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_sender", role: "sender", state: "busy" });
+    seedMember({ id: "m_receiver", role: "receiver", state: "busy" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.send(team.id, "sender", "receiver", "found a bug");
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].title).toBe("[orch]");
+    expect(toasts[0].message).toBe("sender → receiver: found a bug");
+    expect(toasts[0].variant).toBe("info");
+  });
+
+  test("lead send does NOT fire a toast", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_receiver", role: "receiver", state: "busy" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.send(team.id, "lead", "receiver", "go do it");
+
+    expect(toasts).toHaveLength(0);
+  });
+
+  test("long peer DM content is truncated to ~60 chars + ellipsis", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_sender", role: "sender", state: "busy" });
+    seedMember({ id: "m_receiver", role: "receiver", state: "busy" });
+
+    const long = "x".repeat(200);
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.send(team.id, "sender", "receiver", long);
+
+    expect(toasts).toHaveLength(1);
+    const msg = toasts[0].message;
+    // Format: "sender → receiver: <57 x's>..."  → preview portion capped at 60
+    expect(msg).toContain("...");
+    // prefix "sender → receiver: " (19 chars) + 60-char preview = 79
+    const previewPart = msg.slice(msg.indexOf(": ") + 2);
+    expect(previewPart.length).toBeLessThanOrEqual(60);
+    expect(previewPart.endsWith("...")).toBe(true);
+  });
+
+  test("peer toast body uses `<from> → <to>: <preview>` format", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_alpha", role: "alpha", state: "busy" });
+    seedMember({ id: "m_beta", role: "beta", state: "busy" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.send(team.id, "alpha", "beta", "hi");
+
+    expect(toasts[0].message).toMatch(/^alpha → beta: hi$/);
+  });
+
+  test("backpressure rejection does NOT fire a toast", () => {
+    const team = seedTeam({
+      id: "team_bp",
+      name: "bp-team",
+      config: { workStealing: true, backpressureLimit: 1, budgetLimit: undefined },
+    });
+    seedMember({ id: "m_s", role: "sender", teamID: "team_bp", state: "busy" });
+    seedMember({ id: "m_r", role: "receiver", teamID: "team_bp", state: "busy" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.send(team.id, "sender", "receiver", "first"); // ok → 1 toast
+    expect(() =>
+      bus.send(team.id, "sender", "receiver", "second") // rejected
+    ).toThrow(/Backpressure limit reached/);
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toContain("first");
   });
 
   test("send uses team name lookup when id does not match", () => {
@@ -581,6 +662,79 @@ describe("MessageBus", () => {
     const bus = new MessageBus(store, mockManager, mockCtx);
     const ids = bus.broadcast(team.id, "lead", "lonely message");
     expect(ids).toEqual([]);
+  });
+
+  test("broadcast fires a single toast when sender is a member", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_rev", role: "reviewer", state: "busy" });
+    seedMember({ id: "m_a", role: "a", state: "busy" });
+    seedMember({ id: "m_b", role: "b", state: "busy" });
+    seedMember({ id: "m_c", role: "c", state: "busy" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.broadcast(team.id, "reviewer", "heads up, all");
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].title).toBe("[orch]");
+    expect(toasts[0].message).toBe("reviewer → all (3): heads up, all");
+    expect(toasts[0].variant).toBe("info");
+  });
+
+  test("broadcast from lead fires no toast", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_a", role: "a", state: "busy" });
+    seedMember({ id: "m_b", role: "b", state: "busy" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.broadcast(team.id, "lead", "all hands");
+
+    expect(toasts).toHaveLength(0);
+  });
+
+  test("broadcast toast truncates long content to ~60 chars + ellipsis", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_rev", role: "reviewer", state: "busy" });
+    seedMember({ id: "m_a", role: "a", state: "busy" });
+
+    const long = "y".repeat(200);
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.broadcast(team.id, "reviewer", long);
+
+    expect(toasts).toHaveLength(1);
+    const previewPart = toasts[0].message.slice(toasts[0].message.indexOf(": ") + 2);
+    expect(previewPart.length).toBeLessThanOrEqual(60);
+    expect(previewPart.endsWith("...")).toBe(true);
+  });
+
+  test("broadcast stores `from` as sender's member id, not role", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_rev", role: "reviewer", state: "busy" });
+    seedMember({ id: "m_a", role: "a", state: "busy" });
+    seedMember({ id: "m_b", role: "b", state: "busy" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.broadcast(team.id, "reviewer", "check this out");
+
+    const msgs = store.getTeamMessages(team.id);
+    expect(msgs).toHaveLength(2);
+    for (const m of msgs) {
+      expect(m.from).toBe("m_rev");
+      expect(m.from).not.toBe("reviewer");
+    }
+  });
+
+  test("broadcast from lead stores `from` as 'lead' string", () => {
+    const team = seedTeam();
+    seedMember({ id: "m_a", role: "a", state: "busy" });
+    seedMember({ id: "m_b", role: "b", state: "busy" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    bus.broadcast(team.id, "lead", "go");
+
+    const msgs = store.getTeamMessages(team.id);
+    for (const m of msgs) {
+      expect(m.from).toBe("lead");
+    }
   });
 
   test("messages track undelivered state correctly", () => {

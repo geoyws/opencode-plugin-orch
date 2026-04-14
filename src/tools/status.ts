@@ -6,6 +6,16 @@ import type { TaskBoard } from "../core/task-board.js";
 import type { Store } from "../state/store.js";
 import { stateIcon } from "../core/member.js";
 
+function formatAge(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 export function createStatusTool(
   manager: TeamManager,
   costs: CostTracker,
@@ -59,6 +69,33 @@ export function createStatusTool(
         ...memberRows,
         `╰${border}╯`,
       ];
+
+      // Recent peer messages — surfaces member-to-member chatter that the lead
+      // would otherwise miss. Lead-originated messages are excluded because
+      // the lead already saw them when they sent them.
+      const limit = args.verbose ? 20 : 5;
+      const peerMessages = store
+        .getTeamMessages(team.id)
+        .filter((m) => m.from !== "lead")
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, limit);
+      lines.push("");
+      if (peerMessages.length === 0) {
+        lines.push("Recent messages: (none)");
+      } else {
+        lines.push("Recent messages:");
+        for (const m of peerMessages.reverse()) {
+          const fromRole = store.getMember(m.from)?.role ?? m.from;
+          const toRole = store.getMember(m.to)?.role ?? m.to;
+          const body = args.verbose
+            ? m.content
+            : m.content.length > 50
+              ? m.content.slice(0, 49) + "…"
+              : m.content;
+          const age = formatAge(Date.now() - m.createdAt);
+          lines.push(`  ${fromRole} → ${toRole}  "${body}" (${age})`);
+        }
+      }
 
       // Verbose: task list
       if (args.verbose) {
