@@ -16,16 +16,21 @@ export function createTasksTool(
       "Manage the team task board. Actions: list (view tasks, optionally filtered by status), " +
       "add (create a task with optional dependencies and tags), claim (take an available task — only team members can claim), " +
       "complete (mark done with result text), fail (mark failed with reason), " +
-      "unblock (clear all dependencies on an available task — escape hatch when an upstream dep is stuck). " +
+      "unblock (clear all dependencies on an available task — escape hatch when an upstream dep is stuck), " +
+      "reassign (move a claimed task to a different member by role — avoids going through fail). " +
       "Tasks with unmet dependencies cannot be claimed. Completed tasks auto-unblock dependents.",
     args: {
       team: tool.schema.string().describe("Team name"),
       action: tool.schema
-        .enum(["list", "add", "claim", "complete", "fail", "unblock"])
+        .enum(["list", "add", "claim", "complete", "fail", "unblock", "reassign"])
         .describe("Action to perform"),
       title: tool.schema.string().optional().describe("Task title (for add)"),
       description: tool.schema.string().optional().describe("Task description (for add)"),
-      taskID: tool.schema.string().optional().describe("Task ID (for claim/complete/fail)"),
+      taskID: tool.schema.string().optional().describe("Task ID (for claim/complete/fail/unblock/reassign)"),
+      to: tool.schema
+        .string()
+        .optional()
+        .describe("Role name of the new assignee (for reassign)"),
       result: tool.schema
         .string()
         .optional()
@@ -48,9 +53,9 @@ export function createTasksTool(
     },
     async execute(args, context) {
       try {
-      const rateErr = checkRate(rateLimiter, context, manager);
-      if (rateErr) return rateErr;
       const team = manager.requireTeam(args.team);
+      const rateErr = checkRate(rateLimiter, context, manager, team);
+      if (rateErr) return rateErr;
 
       switch (args.action) {
         case "list": {
@@ -133,6 +138,25 @@ export function createTasksTool(
           return `Unblocked task "${task.title}": cleared ${cleared} ${
             cleared === 1 ? "dependency" : "dependencies"
           }`;
+        }
+
+        case "reassign": {
+          if (!args.taskID) return "Error: taskID is required for reassign";
+          if (!args.to) return "Error: to is required for reassign";
+          const current = store.getTask(args.taskID);
+          if (!current) return `Error: Task ${args.taskID} not found`;
+          const newAssignee = manager.getMemberByRole(team.id, args.to);
+          if (!newAssignee) {
+            return `Error: Member "${args.to}" not found in team "${team.name}"`;
+          }
+          if (["shutdown", "error"].includes(newAssignee.state)) {
+            return `Error: Cannot reassign to "${args.to}" — state is ${newAssignee.state}`;
+          }
+          const oldRole = current.assignee
+            ? store.getMember(current.assignee)?.role ?? current.assignee
+            : "unassigned";
+          const task = board.reassign(args.taskID, newAssignee.id);
+          return `Reassigned task "${task.title}" from ${oldRole} to ${args.to}`;
         }
 
         default:

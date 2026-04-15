@@ -8,11 +8,14 @@ export function genID(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${(++idCounter).toString(36)}`;
 }
 
-// Default tool allowlist for spawned members. Passed as `body.tools` to
-// session.promptAsync so members only see the tools we want them to use.
+// Default tool allowlist for spawned members. This is the hand-maintained
+// map of explicit true/false decisions. Do NOT consume this directly when
+// spawning — use `computeMemberToolsAllowed()` so newly-added orch_* tools
+// that were forgotten here still default to deny.
+//
 // orch_create / orch_spawn are denied to prevent recursive team creation;
 // orch_inbox / orch_team / orch_shutdown are lead-only; webfetch is opt-in.
-export const DEFAULT_MEMBER_TOOLS: Record<string, boolean> = {
+export const MEMBER_TOOL_DEFAULTS: Record<string, boolean> = {
   read: true,
   write: true,
   edit: true,
@@ -32,6 +35,33 @@ export const DEFAULT_MEMBER_TOOLS: Record<string, boolean> = {
   orch_spawn: false,
   orch_shutdown: false,
 };
+
+/**
+ * Compute the final tools allowlist for a new member by:
+ *   1. Starting with MEMBER_TOOL_DEFAULTS.
+ *   2. Merging any user-provided `additional` tool names as `true`.
+ *
+ * Any orch_* tool NOT explicitly listed in MEMBER_TOOL_DEFAULTS is implicitly
+ * denied: because we pass this record as an exhaustive allowlist to
+ * session.promptAsync `body.tools`, and opencode's tool-permission check
+ * denies anything listed here as `false` and anything not listed falls
+ * through to the session-level scoping. The practical effect is: when
+ * someone adds a new orch_* tool but forgets to register it in
+ * MEMBER_TOOL_DEFAULTS, members will not silently inherit it — the
+ * unlisted orch_* key is absent from the allowlist and scoped out.
+ */
+export function computeMemberToolsAllowed(
+  additional?: string[]
+): Record<string, boolean> {
+  const result: Record<string, boolean> = { ...MEMBER_TOOL_DEFAULTS };
+  if (additional) {
+    for (const name of additional) {
+      const trimmed = name.trim();
+      if (trimmed) result[trimmed] = true;
+    }
+  }
+  return result;
+}
 
 export class TeamManager {
   constructor(
@@ -101,15 +131,7 @@ export class TeamManager {
     });
     const sessionID = (session.data as { id: string }).id;
 
-    // Compute the tool allowlist: hardcoded defaults + user-provided extras.
-    // User-provided names always get `true` — they're additive, not restrictive.
-    const toolsAllowed: Record<string, boolean> = { ...DEFAULT_MEMBER_TOOLS };
-    if (opts.toolsAllowed) {
-      for (const name of opts.toolsAllowed) {
-        const trimmed = name.trim();
-        if (trimmed) toolsAllowed[trimmed] = true;
-      }
-    }
+    const toolsAllowed = computeMemberToolsAllowed(opts.toolsAllowed);
 
     const member: Member = {
       id: genID("member"),

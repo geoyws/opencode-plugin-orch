@@ -20,9 +20,9 @@ export function createBroadcastTool(
     },
     async execute(args, context) {
       try {
-        const rateErr = checkRate(rateLimiter, context, manager);
-        if (rateErr) return rateErr;
         const team = manager.requireTeam(args.team);
+        const rateErr = checkRate(rateLimiter, context, manager, team);
+        if (rateErr) return rateErr;
         const senderMember = manager.getMemberBySession(context.sessionID);
         const fromRole = senderMember?.role ?? "lead";
 

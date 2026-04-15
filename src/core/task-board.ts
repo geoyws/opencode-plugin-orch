@@ -92,6 +92,21 @@ export class TaskBoard {
     return updated;
   }
 
+  reassign(taskID: string, memberID: string): Task {
+    const task = this.store.getTask(taskID);
+    if (!task) throw new Error(`Task ${taskID} not found`);
+    if (task.status !== "claimed") {
+      throw new Error(
+        `Task "${task.title}" is ${task.status}, only claimed tasks can be reassigned`
+      );
+    }
+    const updated: Task = { ...task, assignee: memberID, version: task.version + 1 };
+    if (!this.store.compareAndUpdateTask(task.id, task.version, updated)) {
+      throw new Error(`Task "${task.title}" was modified concurrently`);
+    }
+    return updated;
+  }
+
   unblock(taskID: string): { task: Task; cleared: number } {
     const task = this.store.getTask(taskID);
     if (!task) throw new Error(`Task ${taskID} not found`);

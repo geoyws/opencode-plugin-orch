@@ -39,9 +39,9 @@ export function createStatusTool(
     },
     async execute(args, context) {
       try {
-      const rateErr = checkRate(rateLimiter, context, manager);
-      if (rateErr) return rateErr;
       const team = manager.requireTeam(args.team);
+      const rateErr = checkRate(rateLimiter, context, manager, team);
+      if (rateErr) return rateErr;
       const members = manager.listMembers(team.id);
       const tasks = board.listTasks(team.id);
       const teamCost = costs.getTeamCost(team.id);

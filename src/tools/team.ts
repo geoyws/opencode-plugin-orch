@@ -26,7 +26,13 @@ export function createTeamTool(
     },
     async execute(args, context) {
       try {
-        const rateErr = checkRate(rateLimiter, context, manager);
+        // list/prune don't target a specific team; for info we resolve the
+        // team up front so checkRate can verify the lead session explicitly.
+        const teamForRate =
+          args.action === "info" && args.team
+            ? manager.requireTeam(args.team)
+            : undefined;
+        const rateErr = checkRate(rateLimiter, context, manager, teamForRate);
         if (rateErr) return rateErr;
         switch (args.action) {
           case "list": {

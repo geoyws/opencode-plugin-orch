@@ -38,7 +38,8 @@ export class RateLimiter {
     const cutoff = now - this.config.windowMs;
     const timestamps = (this.buckets.get(key) ?? []).filter((t) => t > cutoff);
     if (timestamps.length < this.config.maxCalls) return 0;
-    const oldest = Math.min(...timestamps);
+    // Timestamps are push-only in chronological order, so [0] is always oldest.
+    const oldest = timestamps[0];
     return Math.max(0, oldest + this.config.windowMs - now);
   }
 

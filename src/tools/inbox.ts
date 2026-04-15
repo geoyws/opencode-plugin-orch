@@ -41,9 +41,9 @@ export function createInboxTool(
     },
     async execute(args, context) {
       try {
-        const rateErr = checkRate(rateLimiter, context, manager);
-        if (rateErr) return rateErr;
         const team = manager.requireTeam(args.team);
+        const rateErr = checkRate(rateLimiter, context, manager, team);
+        if (rateErr) return rateErr;
         // Teams persisted before this field existed may deserialize without
         // it; store bypasses Zod on load, so we tolerate undefined here.
         const lastSeen = team.leadInboxLastSeenAt ?? 0;

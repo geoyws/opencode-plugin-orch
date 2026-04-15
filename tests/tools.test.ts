@@ -710,6 +710,146 @@ describe("orch_tasks", () => {
     expect(claimed.status).toBe("claimed");
     expect(claimed.assignee).toBe(memberID);
   });
+
+  test("reassign moves a claimed task from A to B", async () => {
+    await h.tools.orch_spawn.execute(
+      { team: "tt", role: "worker2", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const worker2 = h.store.getMemberByRole(teamID, "worker2")!;
+
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "shared-work" },
+      makeToolContext("lead-session")
+    );
+    const [task] = h.store.listTasks(teamID);
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "claim", taskID: task.id },
+      makeToolContext(memberSessionID)
+    );
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "reassign", taskID: task.id, to: "worker2" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('Reassigned task "shared-work" from worker to worker2');
+    expect(h.store.getTask(task.id)?.assignee).toBe(worker2.id);
+    expect(h.store.getTask(task.id)?.status).toBe("claimed");
+  });
+
+  test("reassign to a non-existent role errors", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "t" },
+      makeToolContext("lead-session")
+    );
+    const [task] = h.store.listTasks(teamID);
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "claim", taskID: task.id },
+      makeToolContext(memberSessionID)
+    );
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "reassign", taskID: task.id, to: "ghost" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('Error: Member "ghost" not found in team "tt"');
+  });
+
+  test("reassign to a shutdown member errors with state in message", async () => {
+    await h.tools.orch_spawn.execute(
+      { team: "tt", role: "dead", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const dead = h.store.getMemberByRole(teamID, "dead")!;
+    h.store.updateMember({ ...dead, state: "shutdown" });
+
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "t" },
+      makeToolContext("lead-session")
+    );
+    const [task] = h.store.listTasks(teamID);
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "claim", taskID: task.id },
+      makeToolContext(memberSessionID)
+    );
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "reassign", taskID: task.id, to: "dead" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('Error: Cannot reassign to "dead" — state is shutdown');
+  });
+
+  test("reassign on a non-claimed task errors", async () => {
+    await h.tools.orch_spawn.execute(
+      { team: "tt", role: "worker2", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "still-available" },
+      makeToolContext("lead-session")
+    );
+    const [task] = h.store.listTasks(teamID);
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "reassign", taskID: task.id, to: "worker2" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe(
+      'Error: Task "still-available" is available, only claimed tasks can be reassigned'
+    );
+  });
+
+  test("reassign without `to` arg errors", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "reassign", taskID: "task_xyz" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Error: to is required for reassign");
+  });
+
+  test("reassign without `taskID` arg errors", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "reassign", to: "worker" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Error: taskID is required for reassign");
+  });
+
+  test("after reassign, the new assignee can complete the task", async () => {
+    await h.tools.orch_spawn.execute(
+      { team: "tt", role: "worker2", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const worker2 = h.store.getMemberByRole(teamID, "worker2")!;
+
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "handoff" },
+      makeToolContext("lead-session")
+    );
+    const [task] = h.store.listTasks(teamID);
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "claim", taskID: task.id },
+      makeToolContext(memberSessionID)
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "reassign", taskID: task.id, to: "worker2" },
+      makeToolContext("lead-session")
+    );
+
+    // Complete from worker2's session (verifies the reassign actually
+    // moved ownership — complete() doesn't check caller, but the point
+    // is that the assignee field in the store now points at worker2.)
+    const done = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "complete", taskID: task.id, result: "shipped" },
+      makeToolContext(worker2.sessionID)
+    );
+    expect(done).toBe('Completed task "handoff"');
+    const final = h.store.getTask(task.id)!;
+    expect(final.status).toBe("completed");
+    expect(final.assignee).toBe(worker2.id);
+    expect(final.result).toBe("shipped");
+  });
 });
 
 // ─── orch_memo ────────────────────────────────────────────────────────
@@ -1788,5 +1928,41 @@ describe("orch_* rate limiting", () => {
       ctx
     );
     expect(unblocked).not.toContain("rate limit");
+  });
+
+  test("lead sessionID is exempt by explicit match against team.leadSessionID", async () => {
+    // Tight limiter — would block anyone who isn't exempt.
+    const tight = new RateLimiter({ windowMs: 60_000, maxCalls: 1 });
+    const tightTools = createTools({
+      manager: h.manager,
+      bus: h.bus,
+      board: h.board,
+      pad: h.pad,
+      costs: h.costs,
+      activity: h.activity,
+      store: h.store,
+      templates: h.templates,
+      rateLimiter: tight,
+    });
+    const leadCtx = makeToolContext("lead-session");
+    // Well past the 1-call cap — all should succeed because the session
+    // matches team.leadSessionID.
+    for (let i = 0; i < 5; i++) {
+      const r = await tightTools.orch_message.execute(
+        { team: "rl-team", to: "worker", content: `lead ${i}` },
+        leadCtx
+      );
+      expect(r).not.toContain("rate limit");
+    }
+    // Unknown non-member session also no-ops (can't be forged in practice,
+    // and _rate falls through to the safe default).
+    const randomCtx = makeToolContext("random-session");
+    for (let i = 0; i < 5; i++) {
+      const r = await tightTools.orch_message.execute(
+        { team: "rl-team", to: "worker", content: `random ${i}` },
+        randomCtx
+      );
+      expect(r).not.toContain("rate limit");
+    }
   });
 });
