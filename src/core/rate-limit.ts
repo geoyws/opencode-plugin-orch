@@ -57,6 +57,15 @@ export class RateLimiterRegistry {
 
   constructor(public readonly defaultConfig: RateLimiterConfig) {}
 
+  /**
+   * Returns the cached RateLimiter for this team, or creates one with the
+   * provided config if absent.
+   *
+   * Note: config is captured at first-touch. Subsequent calls with a
+   * different config for the same teamID silently return the cached
+   * limiter. To change a team's rate limit config at runtime, call
+   * `remove(teamID)` first, then `forTeam(teamID, newConfig)`.
+   */
   forTeam(teamID: string, config?: RateLimiterConfig): RateLimiter {
     const existing = this.limiters.get(teamID);
     if (existing) return existing;

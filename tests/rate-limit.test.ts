@@ -116,4 +116,23 @@ describe("RateLimiterRegistry", () => {
       })
     ).toEqual({ windowMs: 60_000, maxCalls: 60 });
   });
+
+  test("parseRateLimitEnv rejects '0' and falls back to defaults", () => {
+    // `0` is a valid int but not a valid positive cap — falls back.
+    const cfg = parseRateLimitEnv({
+      ORCH_RATE_LIMIT_MAX_CALLS: "0",
+      ORCH_RATE_LIMIT_WINDOW_MS: "0",
+    });
+    expect(cfg.maxCalls).toBe(60);
+    expect(cfg.windowMs).toBe(60_000);
+  });
+
+  test("parseRateLimitEnv is lenient: '60abc' parses to 60", () => {
+    // Documents current parseInt semantics — trailing non-numeric chars
+    // are tolerated. Tighten to Number(v) if strict parsing is wanted.
+    const cfg = parseRateLimitEnv({
+      ORCH_RATE_LIMIT_MAX_CALLS: "60abc",
+    });
+    expect(cfg.maxCalls).toBe(60);
+  });
 });

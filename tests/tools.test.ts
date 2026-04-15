@@ -198,6 +198,32 @@ describe("orch_spawn", () => {
     expect(body.tools.orch_team).toBe(false);
   });
 
+  test("closes the allowlist against unknown orch_* ids surfaced by the registry (ADR-004)", async () => {
+    // The MockClient.tool.ids stub returns an `orch_frobnicate` entry to
+    // simulate a future orch_* tool that wasn't registered in
+    // MEMBER_TOOL_DEFAULTS. The closed-allowlist closure in
+    // computeMemberToolsAllowed must flip it to false so unlisted != allow.
+    await h.tools.orch_spawn.execute(
+      { team: "t1", role: "closed", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+
+    const calls = h.client.callsFor("session.promptAsync");
+    const body = (calls[0].args as { body: { tools: Record<string, boolean> } }).body;
+
+    // Known defaults preserved — both allowed and denied.
+    expect(body.tools.orch_message).toBe(true);
+    expect(body.tools.orch_create).toBe(false);
+    // Unknown orch_* surfaced by the registry gets an explicit deny.
+    expect(body.tools.orch_frobnicate).toBe(false);
+    // Non-orch defaults are untouched (read stays in the record as true
+    // from the baseline, not from the registry closure).
+    expect("read" in body.tools).toBe(true);
+    expect(body.tools.read).toBe(true);
+    // And the spawn triggered a registry fetch.
+    expect(h.client.callsFor("tool.ids")).toHaveLength(1);
+  });
+
   test("toolsAllowed arg merges on top of defaults (true overrides default false)", async () => {
     await h.tools.orch_spawn.execute(
       {
@@ -971,6 +997,58 @@ describe("orch_tasks", () => {
       makeToolContext("lead-session")
     );
     expect(result).toBe("Error: invalid tasks JSON: expected array");
+  });
+
+  test("add_many resolves a 5-task linear chain of by-title deps", async () => {
+    const chain = [
+      { title: "step-1" },
+      { title: "step-2", dependsOn: ["step-1"] },
+      { title: "step-3", dependsOn: ["step-2"] },
+      { title: "step-4", dependsOn: ["step-3"] },
+      { title: "step-5", dependsOn: ["step-4"] },
+    ];
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: JSON.stringify(chain) },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Added 5 tasks");
+
+    const byTitle = new Map(
+      h.store.listTasks(teamID).map((t) => [t.title, t])
+    );
+    const s1 = byTitle.get("step-1")!;
+    const s2 = byTitle.get("step-2")!;
+    const s3 = byTitle.get("step-3")!;
+    const s4 = byTitle.get("step-4")!;
+    const s5 = byTitle.get("step-5")!;
+    expect(s1.dependsOn).toEqual([]);
+    expect(s2.dependsOn).toEqual([s1.id]);
+    expect(s3.dependsOn).toEqual([s2.id]);
+    expect(s4.dependsOn).toEqual([s3.id]);
+    expect(s5.dependsOn).toEqual([s4.id]);
+  });
+
+  test("add_many: 10 leaves all depending on a single earlier task by title", async () => {
+    const specs = [
+      { title: "root" },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        title: `leaf-${i}`,
+        dependsOn: ["root"],
+      })),
+    ];
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: JSON.stringify(specs) },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Added 11 tasks");
+
+    const tasks = h.store.listTasks(teamID);
+    const root = tasks.find((t) => t.title === "root")!;
+    const leaves = tasks.filter((t) => t.title.startsWith("leaf-"));
+    expect(leaves).toHaveLength(10);
+    for (const leaf of leaves) {
+      expect(leaf.dependsOn).toEqual([root.id]);
+    }
   });
 });
 

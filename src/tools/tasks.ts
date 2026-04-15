@@ -18,7 +18,8 @@ export function createTasksTool(
       "complete (mark done with result text), fail (mark failed with reason), " +
       "unblock (clear all dependencies on an available task — escape hatch when an upstream dep is stuck), " +
       "reassign (move a claimed task to a different member by role — avoids going through fail), " +
-      "add_many (bulk-add multiple tasks from a JSON array; later tasks can depend on earlier ones by title). " +
+      "add_many (bulk-add multiple tasks from a JSON array; later tasks can depend on earlier ones by title; " +
+      "NOT atomic — on failure, already-created tasks are kept and the error reports the partial count). " +
       "Tasks with unmet dependencies cannot be claimed. Completed tasks auto-unblock dependents.",
     args: {
       team: tool.schema.string().describe("Team name"),
@@ -191,6 +192,17 @@ export function createTasksTool(
             }`;
           }
 
+          // Build a lowercase-title → id index once upfront, then keep it in
+          // sync with each successful board.addTask. This keeps dep-by-title
+          // lookup O(1) per entry instead of O(N) per entry (the previous
+          // code called board.listTasks() inside the loop — quadratic on
+          // long chains). store.getTask() is already O(1), so IDs go
+          // straight through.
+          const titleToID = new Map<string, string>();
+          for (const t of board.listTasks(team.id)) {
+            titleToID.set(t.title.toLowerCase(), t.id);
+          }
+
           const created: string[] = [];
           for (const spec of parsed) {
             if (!spec.title) {
@@ -199,23 +211,17 @@ export function createTasksTool(
               } task${created.length === 1 ? "" : "s"} before failure)`;
             }
 
-            // Resolve dependsOn entries as ID-first, then case-insensitive title
-            // match within the team (including tasks just created in this loop,
-            // since they're persisted to the store before we reach the next spec).
             let deps: string[] | undefined;
             if (spec.dependsOn && spec.dependsOn.length > 0) {
               const resolved: string[] = [];
-              const teamTasks = board.listTasks(team.id);
               for (const entry of spec.dependsOn) {
                 if (store.getTask(entry)) {
                   resolved.push(entry);
                   continue;
                 }
-                const byTitle = teamTasks.find(
-                  (t) => t.title.toLowerCase() === entry.toLowerCase()
-                );
+                const byTitle = titleToID.get(entry.toLowerCase());
                 if (byTitle) {
-                  resolved.push(byTitle.id);
+                  resolved.push(byTitle);
                   continue;
                 }
                 return `Error: failed adding task "${spec.title}": dependency "${entry}" not found (tried as both task ID and task title) (created ${
@@ -233,6 +239,7 @@ export function createTasksTool(
                 { dependsOn: deps, tags: spec.tags }
               );
               created.push(task.id);
+              titleToID.set(task.title.toLowerCase(), task.id);
             } catch (e) {
               return `Error: failed adding task "${spec.title}": ${
                 e instanceof Error ? e.message : String(e)

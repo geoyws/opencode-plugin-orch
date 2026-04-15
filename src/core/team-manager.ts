@@ -165,13 +165,27 @@ export class TeamManager {
     // tools fall through to the root `"*": "allow"` default. Endpoint is
     // experimental (`/experimental/tool/ids`) — swallow failures and fall
     // back to an empty list rather than blocking spawn.
+    // 500ms budget: /experimental/tool/ids is a tiny local HTTP call. If it
+    // takes longer than half a second something is wrong (endpoint hung,
+    // opencode crashed, network stack broken) and blocking every spawn on
+    // it would make a dead endpoint look like a frozen plugin. On timeout
+    // or error, fall back to an empty list — MEMBER_TOOL_DEFAULTS still
+    // covers every orch_* tool we know about at write time, so the only
+    // thing we lose in the fallback path is closed-allowlist semantics
+    // for *future* orch_* tools the caller forgot to register here.
     let knownToolIds: string[] = [];
     try {
-      const toolIdsRes = await this.ctx.client.tool.ids();
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("tool.ids timeout")), 500)
+      );
+      const toolIdsRes = await Promise.race([
+        this.ctx.client.tool.ids(),
+        timeout,
+      ]);
       const data = (toolIdsRes as { data?: unknown }).data;
       if (Array.isArray(data)) knownToolIds = data as string[];
     } catch {
-      // Registry query failed — proceed with MEMBER_TOOL_DEFAULTS alone.
+      // Network error, timeout, or unexpected shape — fall back to empty.
     }
 
     const toolsAllowed = computeMemberToolsAllowed(opts.toolsAllowed, knownToolIds);

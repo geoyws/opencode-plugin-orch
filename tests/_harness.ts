@@ -136,6 +136,26 @@ export class MockClient {
       return { data: true };
     },
   };
+
+  // Mirrors opencode's `/experimental/tool/ids` endpoint. Returns the orch_*
+  // tools the plugin actually registers plus a few common built-ins, and
+  // deliberately includes a fictional `orch_frobnicate` so tests can assert
+  // that the closed-allowlist closure in computeMemberToolsAllowed (ADR-004)
+  // explicitly denies unknown orch_* ids surfaced by the registry.
+  tool = {
+    ids: async (params?: unknown) => {
+      this.record("tool.ids", params ?? {});
+      return {
+        data: [
+          "read", "write", "edit", "bash", "glob", "grep",
+          "orch_create", "orch_spawn", "orch_message", "orch_broadcast",
+          "orch_tasks", "orch_memo", "orch_status", "orch_shutdown",
+          "orch_result", "orch_inbox", "orch_team",
+          "orch_frobnicate",
+        ],
+      };
+    },
+  };
 }
 
 // ── Test harness — the full plugin wired up with a mock client ───
