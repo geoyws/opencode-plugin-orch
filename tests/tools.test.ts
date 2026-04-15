@@ -4,7 +4,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { createHarness, makeToolContext, type Harness } from "./_harness.js";
 import { createTools } from "../src/tools/index.js";
-import { RateLimiter } from "../src/core/rate-limit.js";
+import { RateLimiterRegistry } from "../src/core/rate-limit.js";
 
 // ─── orch_create ──────────────────────────────────────────────────────
 describe("orch_create", () => {
@@ -849,6 +849,128 @@ describe("orch_tasks", () => {
     expect(final.status).toBe("completed");
     expect(final.assignee).toBe(worker2.id);
     expect(final.result).toBe("shipped");
+  });
+
+  test("reassign to the current assignee is a no-op", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "self-reassign" },
+      makeToolContext("lead-session")
+    );
+    const [task] = h.store.listTasks(teamID);
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "claim", taskID: task.id },
+      makeToolContext(memberSessionID)
+    );
+    const beforeVersion = h.store.getTask(task.id)!.version;
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "reassign", taskID: task.id, to: "worker" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('Task "self-reassign" is already assigned to worker');
+
+    const after = h.store.getTask(task.id)!;
+    expect(after.assignee).toBe(memberID);
+    expect(after.version).toBe(beforeVersion);
+  });
+
+  test("add_many creates multiple independent tasks", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add_many",
+        tasks: JSON.stringify([
+          { title: "one" },
+          { title: "two", description: "second" },
+          { title: "three", tags: ["urgent"] },
+        ]),
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Added 3 tasks");
+    const tasks = h.store.listTasks(teamID);
+    const titles = tasks.map((t) => t.title).sort();
+    expect(titles).toEqual(["one", "three", "two"]);
+    const three = tasks.find((t) => t.title === "three")!;
+    expect(three.tags).toEqual(["urgent"]);
+  });
+
+  test("add_many resolves dep-by-title from earlier entries in the same call", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add_many",
+        tasks: JSON.stringify([
+          { title: "build" },
+          { title: "deploy", dependsOn: ["build"] },
+        ]),
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Added 2 tasks");
+    const tasks = h.store.listTasks(teamID);
+    const build = tasks.find((t) => t.title === "build")!;
+    const deploy = tasks.find((t) => t.title === "deploy")!;
+    expect(deploy.dependsOn).toEqual([build.id]);
+  });
+
+  test("add_many with invalid JSON returns error", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: "not-json" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toMatch(/^Error: invalid tasks JSON:/);
+  });
+
+  test("add_many with entry missing title errors out and reports partial count", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add_many",
+        tasks: JSON.stringify([
+          { title: "first" },
+          { description: "no title here" },
+        ]),
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Error: each task needs a title");
+    expect(result).toContain("created 1 task before failure");
+    const tasks = h.store.listTasks(teamID);
+    expect(tasks.map((t) => t.title)).toEqual(["first"]);
+  });
+
+  test("add_many with unresolvable dependency reports partial success", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add_many",
+        tasks: JSON.stringify([
+          { title: "a" },
+          { title: "b", dependsOn: ["nonexistent-upstream"] },
+        ]),
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('failed adding task "b"');
+    expect(result).toContain('dependency "nonexistent-upstream" not found');
+    expect(result).toContain("created 1 task before failure");
+  });
+
+  test("add_many with an empty array reports 0 tasks", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: "[]" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Added 0 tasks");
+  });
+
+  test("add_many with a non-array JSON value errors", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: '{"title":"nope"}' },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Error: invalid tasks JSON: expected array");
   });
 });
 
@@ -1839,11 +1961,11 @@ describe("orch_* rate limiting", () => {
   // Rebuild the tools with a tight limiter so we can exercise the limit
   // without spamming thousands of calls.
   let tools: ReturnType<typeof createTools>;
-  let limiter: RateLimiter;
+  let limiter: RateLimiterRegistry;
 
   beforeEach(async () => {
     h = await createHarness();
-    limiter = new RateLimiter({ windowMs: 60_000, maxCalls: 3 });
+    limiter = new RateLimiterRegistry({ windowMs: 60_000, maxCalls: 3 });
     tools = createTools({
       manager: h.manager,
       bus: h.bus,
@@ -1901,7 +2023,7 @@ describe("orch_* rate limiting", () => {
     const worker = h.store.getMemberByRole(team.id, "worker")!;
     const ctx = makeToolContext(worker.sessionID);
     // Use a tight window to keep the test fast.
-    limiter = new RateLimiter({ windowMs: 60, maxCalls: 2 });
+    limiter = new RateLimiterRegistry({ windowMs: 60, maxCalls: 2 });
     tools = createTools({
       manager: h.manager,
       bus: h.bus,
@@ -1932,7 +2054,7 @@ describe("orch_* rate limiting", () => {
 
   test("lead sessionID is exempt by explicit match against team.leadSessionID", async () => {
     // Tight limiter — would block anyone who isn't exempt.
-    const tight = new RateLimiter({ windowMs: 60_000, maxCalls: 1 });
+    const tight = new RateLimiterRegistry({ windowMs: 60_000, maxCalls: 1 });
     const tightTools = createTools({
       manager: h.manager,
       bus: h.bus,
@@ -1964,5 +2086,143 @@ describe("orch_* rate limiting", () => {
       );
       expect(r).not.toContain("rate limit");
     }
+  });
+});
+
+// ─── per-team rate limit config ───────────────────────────────────────
+describe("per-team rate limit config", () => {
+  let h: Harness;
+  beforeEach(async () => { h = await createHarness(); });
+  afterEach(() => { h.cleanup(); });
+
+  test("orch_create rateLimitMaxCalls caps the team's members", async () => {
+    await h.tools.orch_create.execute(
+      {
+        name: "ratecfg",
+        backpressureLimit: 1000,
+        rateLimitMaxCalls: 3,
+        rateLimitWindowMs: 60_000,
+      },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_spawn.execute(
+      { team: "ratecfg", role: "worker", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const team = h.store.getTeamByName("ratecfg")!;
+    expect(team.config.rateLimit).toEqual({ windowMs: 60_000, maxCalls: 3 });
+    const worker = h.store.getMemberByRole(team.id, "worker")!;
+    const ctx = makeToolContext(worker.sessionID);
+
+    for (let i = 0; i < 3; i++) {
+      const r = await h.tools.orch_message.execute(
+        { team: "ratecfg", to: "lead", content: `${i}` },
+        ctx
+      );
+      expect(r).not.toContain("rate limit");
+    }
+    const blocked = await h.tools.orch_message.execute(
+      { team: "ratecfg", to: "lead", content: "4" },
+      ctx
+    );
+    expect(blocked).toContain("rate limit exceeded");
+    expect(blocked).toContain("(3 calls/min)");
+  });
+
+  test("two members on the same team have independent buckets", async () => {
+    await h.tools.orch_create.execute(
+      {
+        name: "shared",
+        backpressureLimit: 1000,
+        rateLimitMaxCalls: 2,
+        rateLimitWindowMs: 60_000,
+      },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_spawn.execute(
+      { team: "shared", role: "a", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_spawn.execute(
+      { team: "shared", role: "b", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const team = h.store.getTeamByName("shared")!;
+    const a = h.store.getMemberByRole(team.id, "a")!;
+    const b = h.store.getMemberByRole(team.id, "b")!;
+
+    // a exhausts its own bucket
+    await h.tools.orch_message.execute({ team: "shared", to: "b", content: "1" }, makeToolContext(a.sessionID));
+    await h.tools.orch_message.execute({ team: "shared", to: "b", content: "2" }, makeToolContext(a.sessionID));
+    const aBlocked = await h.tools.orch_message.execute(
+      { team: "shared", to: "b", content: "3" },
+      makeToolContext(a.sessionID)
+    );
+    expect(aBlocked).toContain("rate limit exceeded");
+
+    // b's bucket is untouched
+    const bFirst = await h.tools.orch_message.execute(
+      { team: "shared", to: "a", content: "1" },
+      makeToolContext(b.sessionID)
+    );
+    expect(bFirst).not.toContain("rate limit");
+    const bSecond = await h.tools.orch_message.execute(
+      { team: "shared", to: "a", content: "2" },
+      makeToolContext(b.sessionID)
+    );
+    expect(bSecond).not.toContain("rate limit");
+    const bBlocked = await h.tools.orch_message.execute(
+      { team: "shared", to: "a", content: "3" },
+      makeToolContext(b.sessionID)
+    );
+    expect(bBlocked).toContain("rate limit exceeded");
+  });
+
+  test("two teams with different limits apply independently", async () => {
+    await h.tools.orch_create.execute(
+      { name: "ta", backpressureLimit: 1000, rateLimitMaxCalls: 2 },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_create.execute(
+      { name: "tb", backpressureLimit: 1000, rateLimitMaxCalls: 5 },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_spawn.execute(
+      { team: "ta", role: "w", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_spawn.execute(
+      { team: "tb", role: "w", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const ta = h.store.getTeamByName("ta")!;
+    const tb = h.store.getTeamByName("tb")!;
+    const aw = h.store.getMemberByRole(ta.id, "w")!;
+    const bw = h.store.getMemberByRole(tb.id, "w")!;
+
+    // ta: third call blocks
+    await h.tools.orch_message.execute({ team: "ta", to: "lead", content: "1" }, makeToolContext(aw.sessionID));
+    await h.tools.orch_message.execute({ team: "ta", to: "lead", content: "2" }, makeToolContext(aw.sessionID));
+    const taBlocked = await h.tools.orch_message.execute(
+      { team: "ta", to: "lead", content: "3" },
+      makeToolContext(aw.sessionID)
+    );
+    expect(taBlocked).toContain("rate limit exceeded");
+    expect(taBlocked).toContain("(2 calls/min)");
+
+    // tb: first 5 succeed, sixth blocks
+    for (let i = 0; i < 5; i++) {
+      const r = await h.tools.orch_message.execute(
+        { team: "tb", to: "lead", content: `${i}` },
+        makeToolContext(bw.sessionID)
+      );
+      expect(r).not.toContain("rate limit");
+    }
+    const tbBlocked = await h.tools.orch_message.execute(
+      { team: "tb", to: "lead", content: "6" },
+      makeToolContext(bw.sessionID)
+    );
+    expect(tbBlocked).toContain("rate limit exceeded");
+    expect(tbBlocked).toContain("(5 calls/min)");
   });
 });

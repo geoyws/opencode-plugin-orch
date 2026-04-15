@@ -3,7 +3,7 @@ import type { TeamManager } from "../core/team-manager.js";
 import type { TaskBoard } from "../core/task-board.js";
 import type { CostTracker } from "../core/cost-tracker.js";
 import type { Store } from "../state/store.js";
-import type { RateLimiter } from "../core/rate-limit.js";
+import type { RateLimiterRegistry } from "../core/rate-limit.js";
 import { checkRate } from "./_rate.js";
 
 export function createResultTool(
@@ -11,7 +11,7 @@ export function createResultTool(
   board: TaskBoard,
   costs: CostTracker,
   store: Store,
-  rateLimiter: RateLimiter
+  rateLimiter: RateLimiterRegistry
 ): ToolDefinition {
   return tool({
     description:

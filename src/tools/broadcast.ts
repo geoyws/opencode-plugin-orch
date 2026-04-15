@@ -1,13 +1,13 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { MessageBus } from "../core/message-bus.js";
-import type { RateLimiter } from "../core/rate-limit.js";
+import type { RateLimiterRegistry } from "../core/rate-limit.js";
 import { checkRate } from "./_rate.js";
 
 export function createBroadcastTool(
   manager: TeamManager,
   bus: MessageBus,
-  rateLimiter: RateLimiter
+  rateLimiter: RateLimiterRegistry
 ): ToolDefinition {
   return tool({
     description:

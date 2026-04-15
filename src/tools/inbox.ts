@@ -1,7 +1,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { Store } from "../state/store.js";
-import type { RateLimiter } from "../core/rate-limit.js";
+import type { RateLimiterRegistry } from "../core/rate-limit.js";
 import { checkRate } from "./_rate.js";
 
 function formatAge(ms: number): string {
@@ -17,7 +17,7 @@ function formatAge(ms: number): string {
 export function createInboxTool(
   manager: TeamManager,
   store: Store,
-  rateLimiter: RateLimiter
+  rateLimiter: RateLimiterRegistry
 ): ToolDefinition {
   return tool({
     description:

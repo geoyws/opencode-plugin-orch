@@ -4,7 +4,7 @@ import type { CostTracker } from "../core/cost-tracker.js";
 import type { ActivityTracker } from "../core/activity.js";
 import type { TaskBoard } from "../core/task-board.js";
 import type { Store } from "../state/store.js";
-import type { RateLimiter } from "../core/rate-limit.js";
+import type { RateLimiterRegistry } from "../core/rate-limit.js";
 import { stateIcon } from "../core/member.js";
 import { checkRate } from "./_rate.js";
 
@@ -24,7 +24,7 @@ export function createStatusTool(
   activity: ActivityTracker,
   board: TaskBoard,
   store: Store,
-  rateLimiter: RateLimiter
+  rateLimiter: RateLimiterRegistry
 ): ToolDefinition {
   return tool({
     description:

@@ -35,12 +35,20 @@ export const EscalationConfig = z.object({
 });
 export type EscalationConfig = z.infer<typeof EscalationConfig>;
 
+// ── Rate limit config ─────────────────────────────────────────────────
+export const RateLimitConfig = z.object({
+  windowMs: z.number().int().min(1).default(60_000),
+  maxCalls: z.number().int().min(1).default(60),
+});
+export type RateLimitConfig = z.infer<typeof RateLimitConfig>;
+
 // ── Team config ───────────────────────────────────────────────────────
 export const TeamConfig = z.object({
   workStealing: z.boolean().default(true),
   backpressureLimit: z.number().int().min(1).default(50),
   budgetLimit: z.number().optional(),
   escalation: EscalationConfig.optional(),
+  rateLimit: RateLimitConfig.optional(),
 });
 export type TeamConfig = z.infer<typeof TeamConfig>;
 

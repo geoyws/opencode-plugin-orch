@@ -48,3 +48,24 @@ export class RateLimiter {
     else this.buckets.delete(key);
   }
 }
+
+// Registry of per-team RateLimiter instances. Each team gets its own
+// limiter so per-team config (from TeamConfig.rateLimit) applies
+// independently. Teams without explicit config use the default.
+export class RateLimiterRegistry {
+  private limiters = new Map<string, RateLimiter>();
+
+  constructor(public readonly defaultConfig: RateLimiterConfig) {}
+
+  forTeam(teamID: string, config?: RateLimiterConfig): RateLimiter {
+    const existing = this.limiters.get(teamID);
+    if (existing) return existing;
+    const limiter = new RateLimiter(config ?? this.defaultConfig);
+    this.limiters.set(teamID, limiter);
+    return limiter;
+  }
+
+  remove(teamID: string): void {
+    this.limiters.delete(teamID);
+  }
+}

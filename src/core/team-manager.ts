@@ -37,23 +37,45 @@ export const MEMBER_TOOL_DEFAULTS: Record<string, boolean> = {
 };
 
 /**
- * Compute the final tools allowlist for a new member by:
- *   1. Starting with MEMBER_TOOL_DEFAULTS.
- *   2. Merging any user-provided `additional` tool names as `true`.
+ * Compute the final tools allowlist for a new member.
  *
- * Any orch_* tool NOT explicitly listed in MEMBER_TOOL_DEFAULTS is implicitly
- * denied: because we pass this record as an exhaustive allowlist to
- * session.promptAsync `body.tools`, and opencode's tool-permission check
- * denies anything listed here as `false` and anything not listed falls
- * through to the session-level scoping. The practical effect is: when
- * someone adds a new orch_* tool but forgets to register it in
- * MEMBER_TOOL_DEFAULTS, members will not silently inherit it — the
- * unlisted orch_* key is absent from the allowlist and scoped out.
+ * IMPORTANT — opencode's `body.tools` semantics (see ADR-004): the record
+ * passed to `session.promptAsync` is an OVERRIDE MAP, not a closed
+ * allowlist. opencode translates each entry into a session-level
+ * permission rule (`{ permission, action: allow|deny, pattern: "*" }`),
+ * appends those to the agent's ruleset, and uses `findLast` to resolve
+ * the effective rule per tool. Tools NOT listed in `body.tools` fall
+ * through to the root default `"*": "allow"` in opencode's `defaults3`
+ * — i.e. **unlisted = ALLOW**. Naively passing MEMBER_TOOL_DEFAULTS alone
+ * would leave any future `orch_*` tool that a contributor forgets to
+ * register here silently accessible to members.
+ *
+ * To close that hole we need to explicitly deny any orch_* tool that
+ * exists at runtime but is not in MEMBER_TOOL_DEFAULTS. The caller
+ * (spawnMember) queries the live tool registry via `ctx.client.tool.ids()`
+ * and passes the result as `knownToolIds`.
+ *
+ * Order of operations:
+ *   1. Start with MEMBER_TOOL_DEFAULTS.
+ *   2. For each id in `knownToolIds` that starts with `orch_` and is NOT
+ *      already in MEMBER_TOOL_DEFAULTS, set it to `false` (implicit deny
+ *      becomes explicit deny).
+ *   3. Merge any user-provided `additional` tool names as `true` — this
+ *      is the escape hatch, so a caller who knows what they're doing can
+ *      still opt a specific member into an otherwise-denied tool.
  */
 export function computeMemberToolsAllowed(
-  additional?: string[]
+  additional?: string[],
+  knownToolIds?: string[]
 ): Record<string, boolean> {
   const result: Record<string, boolean> = { ...MEMBER_TOOL_DEFAULTS };
+  if (knownToolIds) {
+    for (const id of knownToolIds) {
+      if (id.startsWith("orch_") && !(id in MEMBER_TOOL_DEFAULTS)) {
+        result[id] = false;
+      }
+    }
+  }
   if (additional) {
     for (const name of additional) {
       const trimmed = name.trim();
@@ -84,6 +106,7 @@ export class TeamManager {
         backpressureLimit: config.backpressureLimit ?? 50,
         budgetLimit: config.budgetLimit,
         escalation: config.escalation,
+        rateLimit: config.rateLimit,
       },
       createdAt: now,
       // Start the lead's inbox cursor at creation time — any peer message
@@ -96,6 +119,10 @@ export class TeamManager {
 
   getTeam(name: string): Team | undefined {
     return this.store.getTeamByName(name);
+  }
+
+  getTeamById(teamID: string): Team | undefined {
+    return this.store.getTeam(teamID);
   }
 
   requireTeam(name: string): Team {
@@ -131,7 +158,23 @@ export class TeamManager {
     });
     const sessionID = (session.data as { id: string }).id;
 
-    const toolsAllowed = computeMemberToolsAllowed(opts.toolsAllowed);
+    // Best-effort fetch of the live tool registry so computeMemberToolsAllowed
+    // can explicitly deny any orch_* tool a contributor forgot to register in
+    // MEMBER_TOOL_DEFAULTS. See ADR-004 for why this matters: opencode's
+    // body.tools is an override map, not a closed allowlist, so unlisted
+    // tools fall through to the root `"*": "allow"` default. Endpoint is
+    // experimental (`/experimental/tool/ids`) — swallow failures and fall
+    // back to an empty list rather than blocking spawn.
+    let knownToolIds: string[] = [];
+    try {
+      const toolIdsRes = await this.ctx.client.tool.ids();
+      const data = (toolIdsRes as { data?: unknown }).data;
+      if (Array.isArray(data)) knownToolIds = data as string[];
+    } catch {
+      // Registry query failed — proceed with MEMBER_TOOL_DEFAULTS alone.
+    }
+
+    const toolsAllowed = computeMemberToolsAllowed(opts.toolsAllowed, knownToolIds);
 
     const member: Member = {
       id: genID("member"),

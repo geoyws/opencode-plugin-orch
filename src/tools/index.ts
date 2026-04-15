@@ -7,7 +7,7 @@ import type { CostTracker } from "../core/cost-tracker.js";
 import type { ActivityTracker } from "../core/activity.js";
 import type { Store } from "../state/store.js";
 import type { TemplateRegistry } from "../templates/index.js";
-import type { RateLimiter } from "../core/rate-limit.js";
+import type { RateLimiterRegistry } from "../core/rate-limit.js";
 import { createCreateTool } from "./create.js";
 import { createSpawnTool } from "./spawn.js";
 import { createMessageTool } from "./message.js";
@@ -29,7 +29,7 @@ export interface ToolDeps {
   activity: ActivityTracker;
   store: Store;
   templates: TemplateRegistry;
-  rateLimiter: RateLimiter;
+  rateLimiter: RateLimiterRegistry;
 }
 
 export function createTools(deps: ToolDeps): Record<string, ToolDefinition> {

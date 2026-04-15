@@ -37,6 +37,14 @@ export function createCreateTool(manager: TeamManager, templates: TemplateRegist
         .number()
         .optional()
         .describe("Max retries per escalation level (default: 1)"),
+      rateLimitWindowMs: tool.schema
+        .number()
+        .optional()
+        .describe("Rate limit window in ms (default: 60000). Set with rateLimitMaxCalls."),
+      rateLimitMaxCalls: tool.schema
+        .number()
+        .optional()
+        .describe("Max orch_* tool calls per member per window (default: 60). Set with rateLimitWindowMs."),
     },
     async execute(args, context) {
       try {
@@ -45,6 +53,13 @@ export function createCreateTool(manager: TeamManager, templates: TemplateRegist
         backpressureLimit: args.backpressureLimit,
         budgetLimit: args.budgetLimit,
       };
+
+      if (args.rateLimitWindowMs !== undefined || args.rateLimitMaxCalls !== undefined) {
+        config.rateLimit = {
+          windowMs: args.rateLimitWindowMs ?? 60_000,
+          maxCalls: args.rateLimitMaxCalls ?? 60,
+        };
+      }
 
       if (args.escalation) {
         try {

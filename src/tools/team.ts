@@ -1,13 +1,13 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { Store } from "../state/store.js";
-import type { RateLimiter } from "../core/rate-limit.js";
+import type { RateLimiterRegistry } from "../core/rate-limit.js";
 import { checkRate } from "./_rate.js";
 
 export function createTeamTool(
   manager: TeamManager,
   store: Store,
-  rateLimiter: RateLimiter
+  rateLimiter: RateLimiterRegistry
 ): ToolDefinition {
   return tool({
     description:
@@ -74,6 +74,7 @@ export function createTeamTool(
                 store.deleteMember(m.id);
               }
               store.deleteTeam(t.id);
+              rateLimiter.remove(t.id);
             }
             const names = prunable.map((t) => t.name).join(", ");
             return `Pruned ${prunable.length} team${

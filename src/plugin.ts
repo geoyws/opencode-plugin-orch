@@ -15,9 +15,25 @@ import { createPermissionHook } from "./hooks/permissions.js";
 import { createActivityHook } from "./hooks/activity-tracker.js";
 import { Reporter } from "./core/reporter.js";
 import { revalidateMemberSessions } from "./core/revalidate.js";
-import { RateLimiter } from "./core/rate-limit.js";
+import { RateLimiterRegistry } from "./core/rate-limit.js";
 
 const INIT_TIMEOUT_MS = 5000;
+
+function parsePositiveInt(v: string | undefined, fallback: number): number {
+  if (!v) return fallback;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+export function parseRateLimitEnv(env: NodeJS.ProcessEnv = process.env): {
+  windowMs: number;
+  maxCalls: number;
+} {
+  return {
+    windowMs: parsePositiveInt(env.ORCH_RATE_LIMIT_WINDOW_MS, 60_000),
+    maxCalls: parsePositiveInt(env.ORCH_RATE_LIMIT_MAX_CALLS, 60),
+  };
+}
 
 export async function plugin(
   input: PluginInput,
@@ -75,9 +91,11 @@ async function doInit(
   const activity = new ActivityTracker();
 
   // ── Rate limiter ────────────────────────────────────────────────
-  // Caps each member at 60 orch_* tool calls per 60-second sliding window.
-  // Lead is exempt (checkRate returns null for non-member sessions).
-  const rateLimiter = new RateLimiter({ windowMs: 60_000, maxCalls: 60 });
+  // Default: 60 orch_* tool calls per 60-second sliding window per member.
+  // Overrideable globally via ORCH_RATE_LIMIT_WINDOW_MS /
+  // ORCH_RATE_LIMIT_MAX_CALLS env vars, or per-team via TeamConfig.rateLimit.
+  // Lead sessions are exempt.
+  const rateLimiter = new RateLimiterRegistry(parseRateLimitEnv());
 
   // ── Session revalidation ────────────────────────────────────────
   // Members recovered from snapshot/JSONL may reference opencode sessions

@@ -18,7 +18,7 @@ import { FileLockManager } from "../src/core/file-locks.js";
 import { EscalationManager } from "../src/core/escalation.js";
 import { ActivityTracker } from "../src/core/activity.js";
 import { TemplateRegistry } from "../src/templates/index.js";
-import { RateLimiter } from "../src/core/rate-limit.js";
+import { RateLimiterRegistry } from "../src/core/rate-limit.js";
 import { createTools } from "../src/tools/index.js";
 import { createEventHook } from "../src/hooks/events.js";
 import { createPermissionHook } from "../src/hooks/permissions.js";
@@ -153,7 +153,7 @@ export interface Harness {
   activity: ActivityTracker;
   templates: TemplateRegistry;
   reporter: Reporter;
-  rateLimiter: RateLimiter;
+  rateLimiter: RateLimiterRegistry;
   tools: ReturnType<typeof createTools>;
   fireEvent: (event: Event) => Promise<void>;
   permissionHook: ReturnType<typeof createPermissionHook>;
@@ -186,11 +186,10 @@ export async function createHarness(): Promise<Harness> {
   const activity = new ActivityTracker();
   const templates = new TemplateRegistry();
   const reporter = new Reporter(client, tmpDir);
-  // Huge cap by default so existing tests that hammer tools in a loop don't
+  // Huge default cap so existing tests that hammer tools in a loop don't
   // hit rate limits. Tests that exercise rate limiting create their own
-  // RateLimiter via tools/_rate or construct a harness and then replace
-  // `harness.rateLimiter`.
-  const rateLimiter = new RateLimiter({ windowMs: 60_000, maxCalls: 100_000 });
+  // RateLimiterRegistry or use TeamConfig.rateLimit to override.
+  const rateLimiter = new RateLimiterRegistry({ windowMs: 60_000, maxCalls: 100_000 });
 
   const tools = createTools({
     manager,

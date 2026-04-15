@@ -2,14 +2,14 @@ import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { TaskBoard } from "../core/task-board.js";
 import type { Store } from "../state/store.js";
-import type { RateLimiter } from "../core/rate-limit.js";
+import type { RateLimiterRegistry } from "../core/rate-limit.js";
 import { checkRate } from "./_rate.js";
 
 export function createTasksTool(
   manager: TeamManager,
   board: TaskBoard,
   store: Store,
-  rateLimiter: RateLimiter
+  rateLimiter: RateLimiterRegistry
 ): ToolDefinition {
   return tool({
     description:
@@ -17,12 +17,13 @@ export function createTasksTool(
       "add (create a task with optional dependencies and tags), claim (take an available task — only team members can claim), " +
       "complete (mark done with result text), fail (mark failed with reason), " +
       "unblock (clear all dependencies on an available task — escape hatch when an upstream dep is stuck), " +
-      "reassign (move a claimed task to a different member by role — avoids going through fail). " +
+      "reassign (move a claimed task to a different member by role — avoids going through fail), " +
+      "add_many (bulk-add multiple tasks from a JSON array; later tasks can depend on earlier ones by title). " +
       "Tasks with unmet dependencies cannot be claimed. Completed tasks auto-unblock dependents.",
     args: {
       team: tool.schema.string().describe("Team name"),
       action: tool.schema
-        .enum(["list", "add", "claim", "complete", "fail", "unblock", "reassign"])
+        .enum(["list", "add", "add_many", "claim", "complete", "fail", "unblock", "reassign"])
         .describe("Action to perform"),
       title: tool.schema.string().optional().describe("Task title (for add)"),
       description: tool.schema.string().optional().describe("Task description (for add)"),
@@ -31,6 +32,15 @@ export function createTasksTool(
         .string()
         .optional()
         .describe("Role name of the new assignee (for reassign)"),
+      tasks: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "JSON array of tasks for add_many. Each entry: " +
+          "{ title, description?, dependsOn?: string[], tags?: string[] }. " +
+          "dependsOn entries may be task IDs or case-insensitive titles of tasks in the same team " +
+          "(including titles of earlier entries in the same add_many call)."
+        ),
       result: tool.schema
         .string()
         .optional()
@@ -152,11 +162,86 @@ export function createTasksTool(
           if (["shutdown", "error"].includes(newAssignee.state)) {
             return `Error: Cannot reassign to "${args.to}" — state is ${newAssignee.state}`;
           }
+          if (newAssignee.id === current.assignee) {
+            return `Task "${current.title}" is already assigned to ${args.to}`;
+          }
           const oldRole = current.assignee
             ? store.getMember(current.assignee)?.role ?? current.assignee
             : "unassigned";
           const task = board.reassign(args.taskID, newAssignee.id);
           return `Reassigned task "${task.title}" from ${oldRole} to ${args.to}`;
+        }
+
+        case "add_many": {
+          if (!args.tasks) return "Error: tasks JSON array is required for add_many";
+          type Spec = {
+            title?: string;
+            description?: string;
+            dependsOn?: string[];
+            tags?: string[];
+          };
+          let parsed: Spec[];
+          try {
+            const raw = JSON.parse(args.tasks);
+            if (!Array.isArray(raw)) throw new Error("expected array");
+            parsed = raw as Spec[];
+          } catch (e) {
+            return `Error: invalid tasks JSON: ${
+              e instanceof Error ? e.message : String(e)
+            }`;
+          }
+
+          const created: string[] = [];
+          for (const spec of parsed) {
+            if (!spec.title) {
+              return `Error: each task needs a title (got: ${JSON.stringify(spec)}) (created ${
+                created.length
+              } task${created.length === 1 ? "" : "s"} before failure)`;
+            }
+
+            // Resolve dependsOn entries as ID-first, then case-insensitive title
+            // match within the team (including tasks just created in this loop,
+            // since they're persisted to the store before we reach the next spec).
+            let deps: string[] | undefined;
+            if (spec.dependsOn && spec.dependsOn.length > 0) {
+              const resolved: string[] = [];
+              const teamTasks = board.listTasks(team.id);
+              for (const entry of spec.dependsOn) {
+                if (store.getTask(entry)) {
+                  resolved.push(entry);
+                  continue;
+                }
+                const byTitle = teamTasks.find(
+                  (t) => t.title.toLowerCase() === entry.toLowerCase()
+                );
+                if (byTitle) {
+                  resolved.push(byTitle.id);
+                  continue;
+                }
+                return `Error: failed adding task "${spec.title}": dependency "${entry}" not found (tried as both task ID and task title) (created ${
+                  created.length
+                } task${created.length === 1 ? "" : "s"} before failure)`;
+              }
+              deps = resolved;
+            }
+
+            try {
+              const task = board.addTask(
+                team.id,
+                spec.title,
+                spec.description ?? "",
+                { dependsOn: deps, tags: spec.tags }
+              );
+              created.push(task.id);
+            } catch (e) {
+              return `Error: failed adding task "${spec.title}": ${
+                e instanceof Error ? e.message : String(e)
+              } (created ${created.length} task${
+                created.length === 1 ? "" : "s"
+              } before failure)`;
+            }
+          }
+          return `Added ${created.length} task${created.length === 1 ? "" : "s"}`;
         }
 
         default:
