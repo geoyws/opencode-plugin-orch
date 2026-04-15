@@ -595,6 +595,98 @@ describe("orch_memo", () => {
     );
     expect(noVal).toBe("Error: value is required for set");
   });
+
+  test("set with a scoped key stores it under the full literal key", async () => {
+    const set = await h.tools.orch_memo.execute(
+      { team: "mt", action: "set", key: "auth:jwt-secret", value: "abc123" },
+      makeToolContext("lead-session")
+    );
+    expect(set).toBe("Memo set: auth:jwt-secret");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "auth:jwt-secret" },
+      makeToolContext("lead-session")
+    );
+    expect(get).toBe("auth:jwt-secret: abc123");
+  });
+
+  test("list groups multiple scopes with scope headers", async () => {
+    const ctx = makeToolContext("lead-session");
+    await h.tools.orch_memo.execute({ team: "mt", action: "set", key: "auth:jwt-secret", value: "abc123" }, ctx);
+    await h.tools.orch_memo.execute({ team: "mt", action: "set", key: "auth:signing-alg", value: "RS256" }, ctx);
+    await h.tools.orch_memo.execute({ team: "mt", action: "set", key: "deploy:staging-url", value: "https://staging.foo" }, ctx);
+
+    const list = await h.tools.orch_memo.execute(
+      { team: "mt", action: "list" },
+      ctx
+    );
+    const text = String(list);
+    expect(text).toContain('Scratchpad for "mt" (2 scopes, 3 memos):');
+    expect(text).toContain("auth:");
+    expect(text).toContain("  auth:jwt-secret = abc123");
+    expect(text).toContain("  auth:signing-alg = RS256");
+    expect(text).toContain("deploy:");
+    expect(text).toContain("  deploy:staging-url = https://staging.foo");
+    // auth group should appear before deploy group (alphabetical)
+    expect(text.indexOf("auth:")).toBeLessThan(text.indexOf("deploy:"));
+  });
+
+  test("list with scope filter returns only that scope", async () => {
+    const ctx = makeToolContext("lead-session");
+    await h.tools.orch_memo.execute({ team: "mt", action: "set", key: "auth:jwt-secret", value: "abc123" }, ctx);
+    await h.tools.orch_memo.execute({ team: "mt", action: "set", key: "deploy:staging-url", value: "https://staging.foo" }, ctx);
+
+    const list = await h.tools.orch_memo.execute(
+      { team: "mt", action: "list", scope: "auth" },
+      ctx
+    );
+    const text = String(list);
+    expect(text).toContain("auth:jwt-secret = abc123");
+    expect(text).not.toContain("deploy:staging-url");
+
+    // Trailing colon form must work identically
+    const listColon = await h.tools.orch_memo.execute(
+      { team: "mt", action: "list", scope: "auth:" },
+      ctx
+    );
+    const textColon = String(listColon);
+    expect(textColon).toContain("auth:jwt-secret = abc123");
+    expect(textColon).not.toContain("deploy:staging-url");
+  });
+
+  test("list renders unscoped keys in an (unscoped) group", async () => {
+    const ctx = makeToolContext("lead-session");
+    await h.tools.orch_memo.execute({ team: "mt", action: "set", key: "auth:jwt-secret", value: "abc123" }, ctx);
+    await h.tools.orch_memo.execute({ team: "mt", action: "set", key: "notes", value: "remember readme" }, ctx);
+
+    const list = await h.tools.orch_memo.execute(
+      { team: "mt", action: "list" },
+      ctx
+    );
+    const text = String(list);
+    expect(text).toContain("(unscoped):");
+    expect(text).toContain("  notes = remember readme");
+    // (unscoped) bucket is rendered after named scopes
+    expect(text.indexOf("auth:")).toBeLessThan(text.indexOf("(unscoped):"));
+  });
+
+  test("get with a scoped key returns the value", async () => {
+    await h.tools.orch_memo.execute(
+      { team: "mt", action: "set", key: "deploy:staging-url", value: "https://staging.foo" },
+      makeToolContext("lead-session")
+    );
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "deploy:staging-url" },
+      makeToolContext("lead-session")
+    );
+    expect(get).toBe("deploy:staging-url: https://staging.foo");
+  });
+
+  test("tool description documents the scope convention", () => {
+    const desc = String(h.tools.orch_memo.description ?? "");
+    expect(desc).toContain("scope");
+    expect(desc).toContain("auth:jwt-secret");
+  });
 });
 
 // ─── orch_status ──────────────────────────────────────────────────────
@@ -1254,5 +1346,113 @@ describe("orch_team", () => {
       makeToolContext("lead-session")
     );
     expect(result).toBe('Error: Team "ghost" not found');
+  });
+
+  test("prune removes a team whose only member is shutdown", async () => {
+    const team = h.manager.createTeam("dead", "lead-session");
+    await h.tools.orch_spawn.execute(
+      { team: "dead", role: "w", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const m = h.store.getMemberByRole(team.id, "w")!;
+    h.store.updateMember({ ...m, state: "shutdown" });
+
+    const result = await h.tools.orch_team.execute(
+      { action: "prune" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Pruned 1 team: dead");
+    expect(h.store.getTeamByName("dead")).toBeUndefined();
+  });
+
+  test("prune leaves a team alone when any member is still active", async () => {
+    const team = h.manager.createTeam("mixed", "lead-session");
+    await h.tools.orch_spawn.execute(
+      { team: "mixed", role: "alive", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_spawn.execute(
+      { team: "mixed", role: "dead", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const deadMember = h.store.getMemberByRole(team.id, "dead")!;
+    h.store.updateMember({ ...deadMember, state: "shutdown" });
+
+    const result = await h.tools.orch_team.execute(
+      { action: "prune" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("No prunable teams (all teams have active members)");
+    expect(h.store.getTeamByName("mixed")).toBeDefined();
+  });
+
+  test("prune removes empty teams (zero members)", async () => {
+    h.manager.createTeam("empty", "lead-session");
+
+    const result = await h.tools.orch_team.execute(
+      { action: "prune" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Pruned 1 team: empty");
+    expect(h.store.getTeamByName("empty")).toBeUndefined();
+  });
+
+  test("prune with no prunable teams returns sentinel", async () => {
+    const team = h.manager.createTeam("busy", "lead-session");
+    await h.tools.orch_spawn.execute(
+      { team: "busy", role: "w", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    // Leave member in its default initializing state (active)
+    const result = await h.tools.orch_team.execute(
+      { action: "prune" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("No prunable teams (all teams have active members)");
+    expect(h.store.getTeamByName("busy")).toBeDefined();
+    expect(team.id).toBeDefined();
+  });
+
+  test("pruned teams no longer appear in list", async () => {
+    h.manager.createTeam("ghost1", "lead-session");
+    h.manager.createTeam("ghost2", "lead-session");
+    h.manager.createTeam("alive", "lead-session");
+    await h.tools.orch_spawn.execute(
+      { team: "alive", role: "w", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+
+    await h.tools.orch_team.execute(
+      { action: "prune" },
+      makeToolContext("lead-session")
+    );
+
+    const list = await h.tools.orch_team.execute(
+      { action: "list" },
+      makeToolContext("lead-session")
+    );
+    const text = String(list);
+    expect(text).not.toContain("ghost1");
+    expect(text).not.toContain("ghost2");
+    expect(text).toContain("alive");
+  });
+
+  test("prune keeps historical tasks + messages even after team is gone", async () => {
+    const team = h.manager.createTeam("archive", "lead-session");
+    await h.tools.orch_tasks.execute(
+      { team: "archive", action: "add", title: "historical work" },
+      makeToolContext("lead-session")
+    );
+    // Team has zero members → prunable
+    await h.tools.orch_team.execute(
+      { action: "prune" },
+      makeToolContext("lead-session")
+    );
+
+    expect(h.store.getTeamByName("archive")).toBeUndefined();
+    // Tasks are still queryable via direct store access
+    const tasks = h.store.listTasks(team.id);
+    expect(tasks.length).toBe(1);
+    expect(tasks[0].title).toBe("historical work");
   });
 });

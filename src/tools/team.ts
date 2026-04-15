@@ -8,12 +8,13 @@ export function createTeamTool(
 ): ToolDefinition {
   return tool({
     description:
-      "List or inspect agent teams. Actions: list (all teams with summary stats), " +
-      "info (detailed view of a specific team). Useful when you don't remember team " +
-      "names or want a quick overview of active teams.",
+      "List, inspect, or prune agent teams. Actions: list (all teams with summary stats), " +
+      "info (detailed view of a specific team), prune (delete teams whose members are all " +
+      "shutdown/error or that have no members — keeps historical tasks/messages/costs). " +
+      "Useful when you don't remember team names or want to tidy up after smoke tests.",
     args: {
       action: tool.schema
-        .enum(["list", "info"])
+        .enum(["list", "info", "prune"])
         .describe("Action to perform"),
       team: tool.schema
         .string()
@@ -43,6 +44,30 @@ export function createTeamTool(
               );
             }
             return lines.join("\n");
+          }
+
+          case "prune": {
+            const teams = store.listTeams();
+            const prunable = teams.filter((t) => {
+              const members = store.listMembers(t.id);
+              if (members.length === 0) return true;
+              return members.every(
+                (m) => m.state === "shutdown" || m.state === "error"
+              );
+            });
+            if (prunable.length === 0) {
+              return "No prunable teams (all teams have active members)";
+            }
+            for (const t of prunable) {
+              for (const m of store.listMembers(t.id)) {
+                store.deleteMember(m.id);
+              }
+              store.deleteTeam(t.id);
+            }
+            const names = prunable.map((t) => t.name).join(", ");
+            return `Pruned ${prunable.length} team${
+              prunable.length === 1 ? "" : "s"
+            }: ${names}`;
           }
 
           case "info": {
