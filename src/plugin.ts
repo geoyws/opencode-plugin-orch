@@ -14,6 +14,7 @@ import { createEventHook } from "./hooks/events.js";
 import { createPermissionHook } from "./hooks/permissions.js";
 import { createActivityHook } from "./hooks/activity-tracker.js";
 import { Reporter } from "./core/reporter.js";
+import { revalidateMemberSessions } from "./core/revalidate.js";
 
 const INIT_TIMEOUT_MS = 5000;
 
@@ -71,6 +72,12 @@ async function doInit(
   const fileLocks = new FileLockManager(store);
   const escalation = new EscalationManager(store, manager, input);
   const activity = new ActivityTracker();
+
+  // ── Session revalidation ────────────────────────────────────────
+  // Members recovered from snapshot/JSONL may reference opencode sessions
+  // that no longer exist. Walk them now and force-shutdown the dead ones
+  // so we don't try to wake zombies on the next idle event.
+  await revalidateMemberSessions(store, fileLocks, input, reporter);
 
   // ── Templates ───────────────────────────────────────────────────
   const templates = new TemplateRegistry();

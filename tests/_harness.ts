@@ -64,12 +64,22 @@ export class MockClient {
   }
 
   // ── Mock SDK methods ─────────────────────────────────────────
+  // Each method is an instance field (not a prototype method) so tests can
+  // monkey-patch individual endpoints per instance without affecting others.
   session = {
     create: async (params: { body?: { parentID?: string; title?: string } }) => {
       this.record("session.create", params);
       const id = `mock-session-${++this.sessionCounter}`;
       const sess = { id, title: params.body?.title, parentID: params.body?.parentID };
       this.sessions.set(id, sess);
+      return { data: sess };
+    },
+    // `session.get` — used by revalidateMemberSessions(). Default impl resolves
+    // when the session was created via this mock; otherwise rejects (404).
+    get: async (params: { path: { id: string } }) => {
+      this.record("session.get", params);
+      const sess = this.sessions.get(params.path.id);
+      if (!sess) throw new Error(`Session not found: ${params.path.id}`);
       return { data: sess };
     },
     prompt: async (params: {

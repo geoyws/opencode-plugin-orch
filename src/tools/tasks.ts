@@ -25,7 +25,10 @@ export function createTasksTool(manager: TeamManager, board: TaskBoard, store: S
       dependsOn: tool.schema
         .string()
         .optional()
-        .describe("Comma-separated task IDs this depends on (for add)"),
+        .describe(
+          "Comma-separated task IDs OR titles this task depends on (for add). " +
+          "Each entry is tried as a task ID first, then as a case-insensitive exact title match within the same team."
+        ),
       tags: tool.schema
         .string()
         .optional()
@@ -56,9 +59,32 @@ export function createTasksTool(manager: TeamManager, board: TaskBoard, store: S
 
         case "add": {
           if (!args.title) return "Error: title is required for add";
-          const deps = args.dependsOn
-            ? args.dependsOn.split(",").map((s) => s.trim()).filter(Boolean)
-            : undefined;
+          let deps: string[] | undefined;
+          if (args.dependsOn) {
+            const rawDeps = args.dependsOn
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const resolved: string[] = [];
+            const teamTasks = board.listTasks(team.id);
+            for (const entry of rawDeps) {
+              // Try as task ID first (O(1) in the store).
+              if (store.getTask(entry)) {
+                resolved.push(entry);
+                continue;
+              }
+              // Fall back to case-insensitive exact title match within the team.
+              const byTitle = teamTasks.find(
+                (t) => t.title.toLowerCase() === entry.toLowerCase()
+              );
+              if (byTitle) {
+                resolved.push(byTitle.id);
+                continue;
+              }
+              return `Error: dependency "${entry}" not found (tried as both task ID and task title)`;
+            }
+            deps = resolved;
+          }
           const tags = args.tags
             ? args.tags.split(",").map((s) => s.trim()).filter(Boolean)
             : undefined;

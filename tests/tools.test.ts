@@ -412,8 +412,103 @@ describe("orch_tasks", () => {
       },
       makeToolContext("lead-session")
     );
-    expect(result).toContain("Error:");
-    expect(result).toContain("does not exist");
+    expect(result).toBe(
+      'Error: dependency "task_does_not_exist" not found (tried as both task ID and task title)'
+    );
+  });
+
+  test("add resolves a single dependency by title", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "Build step" },
+      makeToolContext("lead-session")
+    );
+    const [buildStep] = h.store.listTasks(teamID);
+
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add",
+        title: "Deploy step",
+        dependsOn: "Build step",
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('Task added: "Deploy step"');
+    const deploy = h.store
+      .listTasks(teamID)
+      .find((t) => t.title === "Deploy step")!;
+    expect(deploy.dependsOn).toEqual([buildStep.id]);
+  });
+
+  test("add resolves mixed ID and title dependencies", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "Other Title" },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "First" },
+      makeToolContext("lead-session")
+    );
+    const [otherTitle, first] = h.store.listTasks(teamID);
+
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add",
+        title: "Third",
+        dependsOn: `${first.id},Other Title`,
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('Task added: "Third"');
+    const third = h.store.listTasks(teamID).find((t) => t.title === "Third")!;
+    expect(third.dependsOn).toContain(first.id);
+    expect(third.dependsOn).toContain(otherTitle.id);
+    expect(third.dependsOn).toHaveLength(2);
+  });
+
+  test("add title match is case-insensitive", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "Build Step" },
+      makeToolContext("lead-session")
+    );
+    const [build] = h.store.listTasks(teamID);
+
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add",
+        title: "Downstream",
+        dependsOn: "build step", // lowercase
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('Task added: "Downstream"');
+    const downstream = h.store
+      .listTasks(teamID)
+      .find((t) => t.title === "Downstream")!;
+    expect(downstream.dependsOn).toEqual([build.id]);
+  });
+
+  test("add still accepts existing task IDs (backward compat)", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "parent" },
+      makeToolContext("lead-session")
+    );
+    const [parent] = h.store.listTasks(teamID);
+
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add",
+        title: "child",
+        dependsOn: parent.id,
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('Task added: "child"');
+    const child = h.store.listTasks(teamID).find((t) => t.title === "child")!;
+    expect(child.dependsOn).toEqual([parent.id]);
   });
 
   test("add without title errors", async () => {
@@ -1039,6 +1134,123 @@ describe("orch_inbox", () => {
   test("returns Error for non-existent team", async () => {
     const result = await h.tools.orch_inbox.execute(
       { team: "ghost", action: "count" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('Error: Team "ghost" not found');
+  });
+});
+
+// ─── orch_team ────────────────────────────────────────────────────────
+describe("orch_team", () => {
+  let h: Harness;
+  beforeEach(async () => { h = await createHarness(); });
+  afterEach(() => { h.cleanup(); });
+
+  test("list returns sentinel string when there are no teams", async () => {
+    const result = await h.tools.orch_team.execute(
+      { action: "list" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("No teams exist.");
+  });
+
+  test("list shows multiple teams with active/total and task counts", async () => {
+    // Team A: 2 members, one shutdown, 2 tasks with 1 completed
+    const teamA = h.manager.createTeam("alpha", "lead-session");
+    await h.tools.orch_spawn.execute(
+      { team: "alpha", role: "a1", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_spawn.execute(
+      { team: "alpha", role: "a2", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const a2 = h.store.getMemberByRole(teamA.id, "a2")!;
+    h.store.updateMember({ ...a2, state: "shutdown" });
+    await h.tools.orch_tasks.execute(
+      { team: "alpha", action: "add", title: "t1" },
+      makeToolContext("lead-session")
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "alpha", action: "add", title: "t2" },
+      makeToolContext("lead-session")
+    );
+    const [t1] = h.store.listTasks(teamA.id);
+    const a1 = h.store.getMemberByRole(teamA.id, "a1")!;
+    await h.tools.orch_tasks.execute(
+      { team: "alpha", action: "claim", taskID: t1.id },
+      makeToolContext(a1.sessionID)
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "alpha", action: "complete", taskID: t1.id, result: "ok" },
+      makeToolContext(a1.sessionID)
+    );
+
+    // Team B: empty
+    h.manager.createTeam("beta", "lead-session");
+
+    const result = await h.tools.orch_team.execute(
+      { action: "list" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("2 teams:");
+    expect(result).toContain("alpha  1/2 active  1/2 tasks done");
+    expect(result).toContain("beta  0/0 active  0/0 tasks done");
+  });
+
+  test("list uses singular when there is exactly one team", async () => {
+    h.manager.createTeam("only", "lead-session");
+    const result = await h.tools.orch_team.execute(
+      { action: "list" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("1 team:");
+    expect(result).not.toContain("1 teams:");
+  });
+
+  test("info shows id, lead session, created, config, members, tasks, messages", async () => {
+    h.manager.createTeam("info-team", "lead-sess-xyz", { budgetLimit: 7.5 });
+    await h.tools.orch_spawn.execute(
+      { team: "info-team", role: "worker", instructions: "x" },
+      makeToolContext("lead-sess-xyz")
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "info-team", action: "add", title: "t" },
+      makeToolContext("lead-sess-xyz")
+    );
+    // Lead-to-member DM so total messages = 1, peer messages = 0
+    await h.tools.orch_message.execute(
+      { team: "info-team", to: "worker", content: "hi" },
+      makeToolContext("lead-sess-xyz")
+    );
+
+    const result = await h.tools.orch_team.execute(
+      { action: "info", team: "info-team" },
+      makeToolContext("lead-sess-xyz")
+    );
+    expect(result).toContain("Team: info-team");
+    expect(result).toMatch(/ID: team_/);
+    expect(result).toContain("Lead session: lead-sess-xyz");
+    expect(result).toMatch(/Created: \d{4}-\d{2}-\d{2}T/);
+    expect(result).toContain("workStealing=true");
+    expect(result).toContain("backpressure=50");
+    expect(result).toContain("budget=$7.5");
+    expect(result).toContain("Members: 1 (worker:initializing)");
+    expect(result).toContain("Tasks: 1 (0 completed, 0 failed)");
+    expect(result).toContain("Messages: 1 (0 peer)");
+  });
+
+  test("info without team arg returns error", async () => {
+    const result = await h.tools.orch_team.execute(
+      { action: "info" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Error: team is required for info action");
+  });
+
+  test("info with non-existent team returns error", async () => {
+    const result = await h.tools.orch_team.execute(
+      { action: "info", team: "ghost" },
       makeToolContext("lead-session")
     );
     expect(result).toBe('Error: Team "ghost" not found');
