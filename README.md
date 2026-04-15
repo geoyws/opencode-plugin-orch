@@ -105,6 +105,8 @@ If you see `plugin has no server entrypoint`, `dist/` is either missing or stale
 
 Just talk to your lead model in natural language — the 11 `orch_*` tools are in its toolbelt. Some things to try:
 
+> For a worked example, see [examples/feature-build-demo.md](examples/feature-build-demo.md).
+
 ### Manual team with two members
 
 > "Create a team called `bug-hunt`. Spawn an investigator (agent: plan) to trace why `src/auth.ts` is failing tests, and a fixer (agent: code) to implement fixes once the investigator finds the root cause. Pre-load `src/auth.ts` and `tests/auth.test.ts` into both their contexts."

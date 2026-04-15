@@ -19,8 +19,10 @@ export function createTasksTool(
       "unblock (clear all dependencies on an available task — escape hatch when an upstream dep is stuck), " +
       "reassign (move a claimed task to a different member by role — avoids going through fail), " +
       "add_many (bulk-add multiple tasks from a JSON array; later tasks can depend on earlier ones by title; " +
-      "NOT atomic — on failure, already-created tasks are kept and the error reports the partial count; " +
-      "if two specs in the same call share a title, later by-title dependency lookups resolve to the most recently created task). " +
+      "default mode is NOT atomic — on failure, already-created tasks are kept and the error reports the partial count, " +
+      "and if two specs in the same call share a title, later by-title dependency lookups resolve to the most recently created task. " +
+      "Pass atomic=true to validate the whole batch first (rejects duplicate titles in the batch and any unresolvable deps) " +
+      "and only commit if validation passes — guarantees all-or-nothing on bad input). " +
       "Tasks with unmet dependencies cannot be claimed. Completed tasks auto-unblock dependents.",
     args: {
       team: tool.schema.string().describe("Team name"),
@@ -39,7 +41,7 @@ export function createTasksTool(
         .optional()
         .describe(
           "JSON array of tasks for add_many. Each entry: " +
-          "{ title, description?, dependsOn?: string[], tags?: string[] }. " +
+          "{ title, description?, dependsOn?: string[], tags?: string[], priority?: number }. " +
           "dependsOn entries may be task IDs or case-insensitive titles of tasks in the same team " +
           "(including titles of earlier entries in the same add_many call)."
         ),
@@ -58,10 +60,24 @@ export function createTasksTool(
         .string()
         .optional()
         .describe("Comma-separated tags (for add)"),
+      priority: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe(
+          "Task priority (for add). Higher = more important; work-stealing and claim ordering prefer higher priority. Default 0."
+        ),
       filter: tool.schema
         .enum(["available", "claimed", "completed", "failed"])
         .optional()
         .describe("Filter by status (for list)"),
+      atomic: tool.schema
+        .boolean()
+        .optional()
+        .describe(
+          "If true, add_many validates the whole batch first and commits only if every spec passes; " +
+          "rejects duplicate titles in the batch. Default false (partial-success semantics)."
+        ),
     },
     async execute(args, context) {
       try {
@@ -79,7 +95,8 @@ export function createTasksTool(
               ? store.getMember(t.assignee)?.role ?? t.assignee
               : "-";
             const deps = t.dependsOn.length > 0 ? ` (deps: ${t.dependsOn.join(",")})` : "";
-            return `  ${t.id}  [${t.status}]  ${t.title}  assignee:${assignee}${deps}`;
+            const prio = ` p:${t.priority ?? 0}`;
+            return `  ${t.id}  [${t.status}]  ${t.title}  assignee:${assignee}${prio}${deps}`;
           });
           return `Tasks for team "${team.name}":\n${lines.join("\n")}`;
         }
@@ -119,6 +136,7 @@ export function createTasksTool(
           const task = board.addTask(team.id, args.title, args.description ?? "", {
             dependsOn: deps,
             tags,
+            priority: args.priority,
           });
           return `Task added: "${task.title}" (id: ${task.id})`;
         }
@@ -181,6 +199,7 @@ export function createTasksTool(
             description?: string;
             dependsOn?: string[];
             tags?: string[];
+            priority?: number;
           };
           let parsed: Spec[];
           try {
@@ -202,6 +221,36 @@ export function createTasksTool(
           const titleToID = new Map<string, string>();
           for (const t of board.listTasks(team.id)) {
             titleToID.set(t.title.toLowerCase(), t.id);
+          }
+
+          const atomic = args.atomic === true;
+
+          if (atomic) {
+            // Pass 1 — pure validation, no side effects. Simulate the same
+            // dep resolution the commit pass will do, tracking proposed
+            // batch titles in a shadow set so later entries can reference
+            // earlier ones by title. If anything fails here we bail with a
+            // single error string and zero tasks created.
+            const batchTitles = new Set<string>();
+            for (let i = 0; i < parsed.length; i++) {
+              const spec = parsed[i];
+              if (!spec.title) {
+                return `Error: validation failed for atomic add_many: spec at index ${i} has no title`;
+              }
+              const lower = spec.title.toLowerCase();
+              if (batchTitles.has(lower)) {
+                return `Error: validation failed for atomic add_many: duplicate title "${spec.title}" in batch`;
+              }
+              if (spec.dependsOn) {
+                for (const entry of spec.dependsOn) {
+                  if (store.getTask(entry)) continue;
+                  if (titleToID.has(entry.toLowerCase())) continue;
+                  if (batchTitles.has(entry.toLowerCase())) continue;
+                  return `Error: validation failed for atomic add_many: dependency "${entry}" for task "${spec.title}" not found`;
+                }
+              }
+              batchTitles.add(lower);
+            }
           }
 
           const created: string[] = [];
@@ -237,7 +286,7 @@ export function createTasksTool(
                 team.id,
                 spec.title,
                 spec.description ?? "",
-                { dependsOn: deps, tags: spec.tags }
+                { dependsOn: deps, tags: spec.tags, priority: spec.priority }
               );
               created.push(task.id);
               titleToID.set(task.title.toLowerCase(), task.id);
@@ -249,7 +298,9 @@ export function createTasksTool(
               } before failure)`;
             }
           }
-          return `Added ${created.length} task${created.length === 1 ? "" : "s"}`;
+          return atomic
+            ? `Added ${created.length} task${created.length === 1 ? "" : "s"} (atomic)`
+            : `Added ${created.length} task${created.length === 1 ? "" : "s"}`;
         }
 
         default:

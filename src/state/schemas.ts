@@ -49,6 +49,9 @@ export const TeamConfig = z.object({
   budgetLimit: z.number().optional(),
   escalation: EscalationConfig.optional(),
   rateLimit: RateLimitConfig.optional(),
+  // Members in `ready` state with no activity for longer than this are
+  // flagged by the idle monitor (warning toast only, no auto-shutdown).
+  idleTimeoutMs: z.number().int().min(1000).optional(),
 });
 export type TeamConfig = z.infer<typeof TeamConfig>;
 
@@ -87,6 +90,11 @@ export const Member = z.object({
   // computeMemberToolsAllowed() — MEMBER_TOOL_DEFAULTS merged with the
   // optional toolsAllowed arg.
   toolsAllowed: z.record(z.string(), z.boolean()).optional(),
+  // Unix ms of the last activity update (ready/busy transition or explicit
+  // touchMember). The idle monitor flags members whose ready-state age
+  // exceeds TeamConfig.idleTimeoutMs. Default 0 so members stored before
+  // this field existed still load (store bypasses Zod for snapshot loads).
+  lastActivityAt: z.number().default(0),
 });
 export type Member = z.infer<typeof Member>;
 
@@ -101,6 +109,7 @@ export const Task = z.object({
   dependsOn: z.array(z.string()).default([]),
   result: z.string().optional(),
   tags: z.array(z.string()).default([]),
+  priority: z.number().int().default(0),
   version: z.number().int().default(0),
   createdAt: z.number(),
   completedAt: z.number().optional(),

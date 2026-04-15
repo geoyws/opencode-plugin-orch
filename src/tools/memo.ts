@@ -12,7 +12,11 @@ export function createMemoTool(
   return tool({
     description:
       "Shared team scratchpad — store and retrieve findings so teammates " +
-      "don't duplicate work. Actions: set, get, list, delete. " +
+      "don't duplicate work. Actions: set, get, list, delete, append, prepend. " +
+      "append/prepend grow a multiline memo without clobbering — append adds `\\n<value>` " +
+      "at the end, prepend adds `<value>\\n` at the start; both create the memo if missing. " +
+      "Known limitation: writes are last-write-wins at the store level, so two simultaneous " +
+      "appends from different members could still race and lose one entry (rare in practice). " +
       "Keys may use a `scope:name` convention (e.g. `auth:jwt-secret`, `deploy:staging-url`) " +
       "to organize memos by subject; `list` groups keys by their scope prefix, and " +
       "`list scope=auth` filters to a single scope. The `:` is purely a presentation " +
@@ -20,10 +24,10 @@ export function createMemoTool(
     args: {
       team: tool.schema.string().describe("Team name"),
       action: tool.schema
-        .enum(["set", "get", "list", "delete"])
+        .enum(["set", "get", "list", "delete", "append", "prepend"])
         .describe("Action to perform"),
-      key: tool.schema.string().optional().describe("Memo key (for set/get/delete)"),
-      value: tool.schema.string().optional().describe("Memo value (for set)"),
+      key: tool.schema.string().optional().describe("Memo key (for set/get/delete/append/prepend)"),
+      value: tool.schema.string().optional().describe("Memo value (for set/append/prepend)"),
       scope: tool.schema
         .string()
         .optional()
@@ -107,6 +111,26 @@ export function createMemoTool(
           if (!args.key) return "Error: key is required for delete";
           pad.delete(team.id, args.key);
           return `Memo deleted: ${args.key}`;
+        }
+
+        case "append": {
+          if (!args.key) return "Error: key is required for append";
+          if (!args.value) return "Error: value is required for append";
+          const current = pad.get(team.id, args.key);
+          const next = current === undefined ? args.value : `${current}\n${args.value}`;
+          pad.set(team.id, args.key, next);
+          const entries = next.split("\n").length;
+          return `Appended to ${args.key} (${entries} ${entries === 1 ? "entry" : "entries"})`;
+        }
+
+        case "prepend": {
+          if (!args.key) return "Error: key is required for prepend";
+          if (!args.value) return "Error: value is required for prepend";
+          const current = pad.get(team.id, args.key);
+          const next = current === undefined ? args.value : `${args.value}\n${current}`;
+          pad.set(team.id, args.key, next);
+          const entries = next.split("\n").length;
+          return `Prepended to ${args.key} (${entries} ${entries === 1 ? "entry" : "entries"})`;
         }
 
         default:

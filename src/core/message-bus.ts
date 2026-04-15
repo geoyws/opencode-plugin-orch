@@ -62,7 +62,12 @@ export class MessageBus {
     return msg.id;
   }
 
-  broadcast(teamID: string, fromRole: string, content: string): string[] {
+  broadcast(
+    teamID: string,
+    fromRole: string,
+    content: string,
+    filter?: (role: string) => boolean
+  ): string[] {
     const team = this.store.getTeamByName(teamID) ?? this.store.getTeam(teamID);
     if (!team) throw new Error(`Team not found: ${teamID}`);
 
@@ -75,6 +80,7 @@ export class MessageBus {
     for (const member of members) {
       if (member.role === fromRole) continue; // Don't send to self
       if (["shutdown", "shutdown_requested"].includes(member.state)) continue;
+      if (filter && !filter(member.role)) continue;
 
       const pending = this.store.getUndeliveredMessages(member.id);
       if (pending.length >= team.config.backpressureLimit) continue; // Skip if at limit

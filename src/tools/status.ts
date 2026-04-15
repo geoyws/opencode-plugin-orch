@@ -54,13 +54,24 @@ export function createStatusTool(
       // Header
       const header = ` ${team.name}  ${activeCount}/${members.length} active  tasks ${completedTasks}/${tasks.length} done  ${costs.formatCost(teamCost)} `;
 
-      // Member rows
+      // Member rows. If a ready member is past its idle timeout, surface
+      // the staleness in the activity column so the lead sees it without
+      // having to wait for the IdleMonitor warning toast.
+      const now = Date.now();
+      const idleTimeout = team.config.idleTimeoutMs ?? 600_000;
       const maxRoleLen = Math.max(...members.map((m) => m.role.length), 8);
       const memberRows = members.map((m) => {
         const icon = stateIcon(m.state);
         const role = m.role.padEnd(maxRoleLen);
         const state = m.state.padEnd(7);
-        const act = activity.formatActivity(m.id);
+        let act = activity.formatActivity(m.id);
+        if (m.state === "ready") {
+          const age = now - (m.lastActivityAt ?? 0);
+          if (age >= idleTimeout) {
+            const mins = Math.floor(age / 60_000);
+            act = `idle ${mins}m`;
+          }
+        }
         const cost = costs.formatCost(costs.getMemberCost(m.id));
         return `│ ${role}  ${icon} ${state} ${act.padEnd(30)} ${cost}│`;
       });

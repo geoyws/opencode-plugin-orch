@@ -6,6 +6,16 @@ import type { Store } from "../state/store.js";
 import type { RateLimiterRegistry } from "../core/rate-limit.js";
 import { checkRate } from "./_rate.js";
 
+const PROGRESS_WIDTH = 20;
+
+function renderProgressBar(completed: number, total: number): string {
+  if (total === 0) return "Progress: no tasks";
+  const pct = Math.round((completed / total) * 100);
+  const filled = Math.round((completed / total) * PROGRESS_WIDTH);
+  const empty = PROGRESS_WIDTH - filled;
+  return `Progress: ${"█".repeat(filled)}${"░".repeat(empty)} ${pct}%`;
+}
+
 export function createResultTool(
   manager: TeamManager,
   board: TaskBoard,
@@ -15,9 +25,11 @@ export function createResultTool(
 ): ToolDefinition {
   return tool({
     description:
-      "Aggregate completed-task results from a team. Formats: summary (default, markdown one-line per task), " +
-      "detailed (markdown with full task results), json (machine-readable). " +
-      "JSON shape: { team: string, totalCost: number, " +
+      "Aggregate completed-task results from a team. Formats: summary (default, markdown with progress bar + one-line per task), " +
+      "detailed (markdown with progress bar + full task results), json (machine-readable). " +
+      "JSON shape: { team: string, " +
+      "progress: {percent, completed, failed, remaining, total}, " +
+      "totalCost: number, " +
       "tasks: {total, completed, failed, pending}, " +
       "results: Array<{id, title, result, assignee}>, " +
       "failures: Array<{id, title, reason}> }.",
@@ -42,10 +54,22 @@ export function createResultTool(
 
       const format = args.format ?? "summary";
 
+      const progressPct =
+        tasks.length === 0
+          ? 0
+          : Math.round((completed.length / tasks.length) * 100);
+
       if (format === "json") {
         return JSON.stringify(
           {
             team: team.name,
+            progress: {
+              percent: progressPct,
+              completed: completed.length,
+              failed: failed.length,
+              remaining: pending.length,
+              total: tasks.length,
+            },
             totalCost: costs.getTeamCost(team.id),
             tasks: {
               total: tasks.length,
@@ -74,6 +98,7 @@ export function createResultTool(
 
       const lines: string[] = [];
       lines.push(`# Results for team "${team.name}"`);
+      lines.push(renderProgressBar(completed.length, tasks.length));
       lines.push(
         `Tasks: ${completed.length} completed, ${failed.length} failed, ${pending.length} remaining`
       );

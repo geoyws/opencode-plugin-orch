@@ -33,16 +33,34 @@ export class Store {
   async init(): Promise<void> {
     fs.mkdirSync(this.dir, { recursive: true });
 
-    // Try to load snapshot
+    // Try to load snapshot. Falls back to fresh state on any failure
+    // (empty file, invalid JSON, missing required fields, etc.) — the
+    // JSONL event logs are the source of truth and the snapshot is just
+    // a fast-path. A corrupt snapshot is never fatal, but we log it so
+    // operators know their fast-path is broken.
     const snapPath = path.join(this.dir, "snapshot.json");
     if (fs.existsSync(snapPath)) {
       try {
         const raw = fs.readFileSync(snapPath, "utf-8");
+        if (raw.length === 0) throw new Error("snapshot is empty");
         const snap: Snapshot = JSON.parse(raw);
         this.loadSnapshot(snap);
-        this.lastSnapshotTs = snap.timestamp;
-      } catch {
-        // corrupt snapshot — start fresh
+        this.lastSnapshotTs = snap.timestamp ?? 0;
+      } catch (err) {
+        console.error(
+          `[orch] snapshot.json at ${snapPath} is corrupt, starting fresh: ${
+            (err as Error).message
+          }`
+        );
+        // Reset partial state in case loadSnapshot threw mid-assignment.
+        this.teams = new Map();
+        this.members = new Map();
+        this.tasks = new Map();
+        this.messages = [];
+        this.costs = [];
+        this.locks = new Map();
+        this.scratchpads = new Map();
+        this.lastSnapshotTs = 0;
       }
     }
 
@@ -86,8 +104,16 @@ export class Store {
         [...this.scratchpads.entries()].map(([k, v]) => [k, Object.fromEntries(v)])
       ),
     };
+    // Atomic snapshot write: write to a temp file then rename. If the
+    // process dies mid-write, the old snapshot.json is untouched and
+    // the next init reads it cleanly. Without this, a crash during
+    // writeFileSync could leave snapshot.json truncated/empty and the
+    // loader would silently start fresh — losing everything the JSONL
+    // logs had already compacted away on the previous saveSnapshot.
     const snapPath = path.join(this.dir, "snapshot.json");
-    fs.writeFileSync(snapPath, JSON.stringify(snap), "utf-8");
+    const tmpPath = `${snapPath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(snap), "utf-8");
+    fs.renameSync(tmpPath, snapPath);
     this.lastSnapshotTs = snap.timestamp;
     this.compactLogs();
   }

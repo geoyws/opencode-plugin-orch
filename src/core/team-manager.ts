@@ -107,6 +107,7 @@ export class TeamManager {
         budgetLimit: config.budgetLimit,
         escalation: config.escalation,
         rateLimit: config.rateLimit,
+        idleTimeoutMs: config.idleTimeoutMs,
       },
       createdAt: now,
       // Start the lead's inbox cursor at creation time — any peer message
@@ -193,6 +194,7 @@ export class TeamManager {
 
     const toolsAllowed = computeMemberToolsAllowed(opts.toolsAllowed, knownToolIds);
 
+    const now = Date.now();
     const member: Member = {
       id: genID("member"),
       teamID: opts.teamID,
@@ -205,8 +207,9 @@ export class TeamManager {
       files: opts.files ?? [],
       escalationLevel: 0,
       retryCount: 0,
-      createdAt: Date.now(),
+      createdAt: now,
       toolsAllowed,
+      lastActivityAt: now,
     };
     this.store.createMember(member);
 
@@ -285,9 +288,21 @@ export class TeamManager {
   transitionMember(memberID: string, to: Member["state"]): Member {
     const member = this.store.getMember(memberID);
     if (!member) throw new Error(`Member ${memberID} not found`);
-    const updated = transitionMember(member, to);
+    let updated = transitionMember(member, to);
+    // Stamp activity on entry to ready/busy so the idle monitor has a
+    // fresh baseline. Terminal states (shutdown/error) don't need it.
+    if (to === "ready" || to === "busy") {
+      updated = { ...updated, lastActivityAt: Date.now() };
+    }
     this.store.updateMember(updated);
     return updated;
+  }
+
+  /** Bump the member's lastActivityAt without changing state. */
+  touchMember(memberID: string): void {
+    const member = this.store.getMember(memberID);
+    if (!member) return;
+    this.store.updateMember({ ...member, lastActivityAt: Date.now() });
   }
 
   async shutdownMember(memberID: string): Promise<void> {

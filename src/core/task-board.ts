@@ -12,6 +12,7 @@ export class TaskBoard {
   addTask(teamID: string, title: string, description: string, opts?: {
     dependsOn?: string[];
     tags?: string[];
+    priority?: number;
   }): Task {
     // Validate that all dependency IDs reference existing tasks
     if (opts?.dependsOn) {
@@ -30,6 +31,7 @@ export class TaskBoard {
       status: "available",
       dependsOn: opts?.dependsOn ?? [],
       tags: opts?.tags ?? [],
+      priority: opts?.priority ?? 0,
       version: 0,
       createdAt: Date.now(),
     };
@@ -182,7 +184,13 @@ export class TaskBoard {
   getAvailableForStealing(teamID: string): Task[] {
     return this.store
       .listTasks(teamID)
-      .filter((t) => t.status === "available" && this.areDependenciesMet(t));
+      .filter((t) => t.status === "available" && this.areDependenciesMet(t))
+      .sort((a, b) => {
+        const pa = a.priority ?? 0;
+        const pb = b.priority ?? 0;
+        if (pa !== pb) return pb - pa;
+        return a.createdAt - b.createdAt;
+      });
   }
 
   scoreTaskForMember(task: Task, memberRole: string): number {
@@ -192,6 +200,8 @@ export class TaskBoard {
       if (memberRole.toLowerCase().includes(tag.toLowerCase())) score += 2;
       if (tag.toLowerCase().includes(memberRole.toLowerCase())) score += 2;
     }
+    // Priority dominates role-match so a p=1 task always outranks a p=0 task.
+    score += (task.priority ?? 0) * 1000;
     return score;
   }
 

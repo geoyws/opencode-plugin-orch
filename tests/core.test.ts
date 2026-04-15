@@ -482,6 +482,51 @@ describe("TaskBoard", () => {
       expect(score2).toBeGreaterThan(score1);
     });
   });
+
+  describe("task priority", () => {
+    test("addTask stores the provided priority", () => {
+      const task = board.addTask(teamID, "Urgent", "d", { priority: 7 });
+      expect(task.priority).toBe(7);
+    });
+
+    test("addTask defaults priority to 0", () => {
+      const task = board.addTask(teamID, "Routine", "d");
+      expect(task.priority).toBe(0);
+    });
+
+    test("getAvailableForStealing returns highest priority first", () => {
+      board.addTask(teamID, "low", "d", { priority: 0 });
+      board.addTask(teamID, "high", "d", { priority: 5 });
+      board.addTask(teamID, "mid", "d", { priority: 2 });
+
+      const order = board.getAvailableForStealing(teamID).map((t) => t.title);
+      expect(order).toEqual(["high", "mid", "low"]);
+    });
+
+    test("ties in priority break by createdAt (older first)", async () => {
+      const first = board.addTask(teamID, "first", "d", { priority: 3 });
+      // Force a distinct createdAt to avoid same-ms collisions
+      await new Promise((r) => setTimeout(r, 2));
+      const second = board.addTask(teamID, "second", "d", { priority: 3 });
+
+      const order = board.getAvailableForStealing(teamID);
+      expect(order.map((t) => t.id)).toEqual([first.id, second.id]);
+    });
+
+    test("stealTask prefers high priority over role-matched low priority", () => {
+      // A backend-tagged p=0 would normally beat a plain p=1, but priority
+      // dominates so the plain p=1 should still be stolen first.
+      board.addTask(teamID, "backend-but-routine", "d", {
+        tags: ["backend"],
+        priority: 0,
+      });
+      board.addTask(teamID, "urgent-generic", "d", { priority: 1 });
+
+      const stolen = board.stealTask(teamID, "m1", "backend");
+      expect(stolen).not.toBeNull();
+      expect(stolen!.title).toBe("urgent-generic");
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1119,6 +1164,145 @@ describe("Store", () => {
       expect(store2.getTeam("t1")!.name).toBe("Good");
 
       store2.destroy();
+    });
+
+    test("handles empty snapshot file (zero bytes) gracefully", async () => {
+      // Writes a zero-byte snapshot.json alongside a valid JSONL event —
+      // simulates a crash during the very first saveSnapshot after the
+      // tmp→rename fix was NOT in place. Loader must fall through to
+      // replay instead of exploding on JSON.parse("").
+      store.createTeam({
+        id: "t1",
+        name: "Empty",
+        leadSessionID: "s1",
+        config: { workStealing: true, backpressureLimit: 50 },
+        createdAt: Date.now(),
+      });
+      const snapPath = path.join(tmpDir, ".opencode", "plugin-orch", "snapshot.json");
+      fs.writeFileSync(snapPath, "", "utf-8");
+
+      const store2 = new Store(tmpDir);
+      await store2.init();
+
+      expect(store2.getTeam("t1")).toBeDefined();
+      expect(store2.getTeam("t1")!.name).toBe("Empty");
+      store2.destroy();
+    });
+
+    test("handles snapshot with missing required fields gracefully", async () => {
+      // Hand-edited / partially-written snapshot that parses as JSON but
+      // is missing the maps loadSnapshot() destructures. Without the
+      // state-reset in the catch block this leaves the store in a
+      // half-populated state. Verify the event log still wins.
+      store.createTeam({
+        id: "t1",
+        name: "Malformed",
+        leadSessionID: "s1",
+        config: { workStealing: true, backpressureLimit: 50 },
+        createdAt: Date.now(),
+      });
+      const snapPath = path.join(tmpDir, ".opencode", "plugin-orch", "snapshot.json");
+      fs.writeFileSync(snapPath, JSON.stringify({ timestamp: 1 }), "utf-8");
+
+      const store2 = new Store(tmpDir);
+      await store2.init();
+
+      expect(store2.getTeam("t1")).toBeDefined();
+      expect(store2.getTeam("t1")!.name).toBe("Malformed");
+      expect(store2.listTeams()).toHaveLength(1);
+      store2.destroy();
+    });
+
+    test("replay skips a truncated trailing JSONL line", async () => {
+      // Write a valid event followed by a partial JSON line — simulates
+      // a crash mid-appendFileSync. The per-line try/catch in
+      // replayEvents() must skip the bad tail and still replay the
+      // good head.
+      const jsonlDir = path.join(tmpDir, ".opencode", "plugin-orch");
+      fs.mkdirSync(jsonlDir, { recursive: true });
+      const teamsPath = path.join(jsonlDir, "teams.jsonl");
+      const goodEvent = JSON.stringify({
+        type: "team.created",
+        timestamp: Date.now(),
+        data: {
+          id: "t1",
+          name: "Trunc",
+          leadSessionID: "s1",
+          config: { workStealing: true, backpressureLimit: 50 },
+          createdAt: Date.now(),
+        },
+      });
+      // Valid line + newline + partial (no newline, unterminated braces)
+      fs.writeFileSync(teamsPath, `${goodEvent}\n{"type":"team.crea`, "utf-8");
+
+      const store2 = new Store(tmpDir);
+      await store2.init();
+      expect(store2.getTeam("t1")).toBeDefined();
+      expect(store2.getTeam("t1")!.name).toBe("Trunc");
+      store2.destroy();
+    });
+
+    test("replay skips a mid-file corrupt JSONL line and keeps earlier+later lines", async () => {
+      // Three events written to teams.jsonl: the middle one is garbage.
+      // replayEvents() should skip the middle and apply the outer two.
+      const jsonlDir = path.join(tmpDir, ".opencode", "plugin-orch");
+      fs.mkdirSync(jsonlDir, { recursive: true });
+      const teamsPath = path.join(jsonlDir, "teams.jsonl");
+      const now = Date.now();
+      const e1 = JSON.stringify({
+        type: "team.created",
+        timestamp: now,
+        data: {
+          id: "t_first",
+          name: "First",
+          leadSessionID: "s1",
+          config: { workStealing: true, backpressureLimit: 50 },
+          createdAt: now,
+        },
+      });
+      const e3 = JSON.stringify({
+        type: "team.created",
+        timestamp: now + 2,
+        data: {
+          id: "t_third",
+          name: "Third",
+          leadSessionID: "s3",
+          config: { workStealing: true, backpressureLimit: 50 },
+          createdAt: now + 2,
+        },
+      });
+      fs.writeFileSync(teamsPath, `${e1}\n{not json at all}\n${e3}\n`, "utf-8");
+
+      const store2 = new Store(tmpDir);
+      await store2.init();
+      expect(store2.getTeam("t_first")).toBeDefined();
+      expect(store2.getTeam("t_third")).toBeDefined();
+      expect(store2.listTeams()).toHaveLength(2);
+      store2.destroy();
+    });
+
+    test("saveSnapshot uses atomic tmp+rename (no partial file visible)", async () => {
+      // Observability test for the tmp+rename fix: after a saveSnapshot,
+      // there should be no lingering `snapshot.json.tmp` and the real
+      // snapshot.json should be readable + valid JSON.
+      store.createTeam({
+        id: "t1",
+        name: "Atomic",
+        leadSessionID: "s1",
+        config: { workStealing: true, backpressureLimit: 50 },
+        createdAt: Date.now(),
+      });
+      store.destroy(); // triggers saveSnapshot
+
+      const snapDir = path.join(tmpDir, ".opencode", "plugin-orch");
+      const snapPath = path.join(snapDir, "snapshot.json");
+      const tmpPath = path.join(snapDir, "snapshot.json.tmp");
+
+      expect(fs.existsSync(snapPath)).toBe(true);
+      expect(fs.existsSync(tmpPath)).toBe(false);
+      const raw = fs.readFileSync(snapPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      expect(parsed.teams.t1.name).toBe("Atomic");
     });
   });
 });

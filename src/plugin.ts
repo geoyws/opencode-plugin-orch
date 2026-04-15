@@ -16,6 +16,7 @@ import { createActivityHook } from "./hooks/activity-tracker.js";
 import { Reporter } from "./core/reporter.js";
 import { revalidateMemberSessions } from "./core/revalidate.js";
 import { RateLimiterRegistry } from "./core/rate-limit.js";
+import { IdleMonitor } from "./core/idle-monitor.js";
 
 const INIT_TIMEOUT_MS = 5000;
 
@@ -100,6 +101,13 @@ async function doInit(
   // Lead sessions are exempt.
   const rateLimiter = new RateLimiterRegistry(parseRateLimitEnv());
 
+  // ── Idle monitor ────────────────────────────────────────────────
+  // Periodically flags `ready` members whose lastActivityAt is older than
+  // the team's idleTimeoutMs (default 10 min). Warning-only — no
+  // auto-shutdown. The timer is unref'd so it never blocks process exit.
+  const idleMonitor = new IdleMonitor(store, reporter);
+  idleMonitor.start();
+
   // ── Session revalidation ────────────────────────────────────────
   // Members recovered from snapshot/JSONL may reference opencode sessions
   // that no longer exist. Walk them now and force-shutdown the dead ones
@@ -142,7 +150,10 @@ async function doInit(
   };
 
   // Graceful shutdown — flush state on process exit
-  const cleanup = () => { store.destroy(); };
+  const cleanup = () => {
+    idleMonitor.stop();
+    store.destroy();
+  };
   process.on("beforeExit", cleanup);
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);

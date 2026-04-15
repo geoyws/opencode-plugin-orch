@@ -417,6 +417,68 @@ describe("orch_broadcast", () => {
     expect(result).toContain("2 member");
     expect(h.store.getUndeliveredMessages(b.id)).toHaveLength(0);
   });
+
+  test("rolePattern glob filters to matching members", async () => {
+    // Extra members: coder-1, coder-2, reviewer (in addition to a/b/c from setup)
+    for (const role of ["coder-1", "coder-2", "reviewer"]) {
+      await h.tools.orch_spawn.execute(
+        { team: "bt", role, instructions: "x" },
+        makeToolContext("lead-session")
+      );
+    }
+    const result = await h.tools.orch_broadcast.execute(
+      { team: "bt", content: "code freeze", rolePattern: "coder-*" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("2 member");
+    expect(result).toContain('matching "coder-*"');
+
+    const team = h.store.getTeamByName("bt")!;
+    const c1 = h.store.getMemberByRole(team.id, "coder-1")!;
+    const c2 = h.store.getMemberByRole(team.id, "coder-2")!;
+    const rev = h.store.getMemberByRole(team.id, "reviewer")!;
+    expect(h.store.getUndeliveredMessages(c1.id)).toHaveLength(1);
+    expect(h.store.getUndeliveredMessages(c2.id)).toHaveLength(1);
+    expect(h.store.getUndeliveredMessages(rev.id)).toHaveLength(0);
+  });
+
+  test("rolePattern exact match targets a single role", async () => {
+    await h.tools.orch_spawn.execute(
+      { team: "bt", role: "reviewer", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const result = await h.tools.orch_broadcast.execute(
+      { team: "bt", content: "take a look", rolePattern: "reviewer" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("1 member");
+    const team = h.store.getTeamByName("bt")!;
+    const rev = h.store.getMemberByRole(team.id, "reviewer")!;
+    expect(h.store.getUndeliveredMessages(rev.id)).toHaveLength(1);
+  });
+
+  test("rolePattern with no matches returns 0 members", async () => {
+    const result = await h.tools.orch_broadcast.execute(
+      { team: "bt", content: "ghost", rolePattern: "nonexistent" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("0 member");
+    // No deliveries anywhere
+    const team = h.store.getTeamByName("bt")!;
+    for (const role of ["a", "b", "c"]) {
+      const m = h.store.getMemberByRole(team.id, role)!;
+      expect(h.store.getUndeliveredMessages(m.id)).toHaveLength(0);
+    }
+  });
+
+  test("no rolePattern still broadcasts to all (backward compat)", async () => {
+    const result = await h.tools.orch_broadcast.execute(
+      { team: "bt", content: "everyone" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("3 member");
+    expect(result).not.toContain("matching");
+  });
 });
 
 // ─── orch_tasks ───────────────────────────────────────────────────────
@@ -1106,6 +1168,158 @@ describe("orch_tasks", () => {
     expect(dependent.dependsOn).toEqual([dups[1].id]);
     expect(dependent.dependsOn).not.toEqual([dups[0].id]);
   });
+
+  test("add action accepts priority and list shows it", async () => {
+    const added = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add",
+        title: "urgent-thing",
+        description: "do it now",
+        priority: 10,
+      },
+      makeToolContext("lead-session")
+    );
+    expect(added).toContain("Task added");
+
+    const stored = h.store
+      .listTasks(teamID)
+      .find((t) => t.title === "urgent-thing")!;
+    expect(stored.priority).toBe(10);
+
+    const list = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "list" },
+      makeToolContext("lead-session")
+    );
+    expect(list).toContain("urgent-thing");
+    expect(list).toContain("p:10");
+  });
+
+  test("add_many supports per-spec priority", async () => {
+    const specs = [
+      { title: "hot", priority: 9 },
+      { title: "cold" },
+    ];
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: JSON.stringify(specs) },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Added 2 tasks");
+
+    const byTitle = new Map(
+      h.store.listTasks(teamID).map((t) => [t.title, t])
+    );
+    expect(byTitle.get("hot")!.priority).toBe(9);
+    expect(byTitle.get("cold")!.priority).toBe(0);
+  });
+
+  test("add_many atomic=true commits a clean batch", async () => {
+    const specs = [
+      { title: "a1" },
+      { title: "a2", dependsOn: ["a1"] },
+      { title: "a3", dependsOn: ["a2"] },
+    ];
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add_many",
+        tasks: JSON.stringify(specs),
+        atomic: true,
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Added 3 tasks (atomic)");
+    const titles = h.store.listTasks(teamID).map((t) => t.title).sort();
+    expect(titles).toEqual(["a1", "a2", "a3"]);
+  });
+
+  test("add_many atomic=true rolls back on unresolvable dep — 0 created", async () => {
+    const specs = [
+      { title: "ok-1" },
+      { title: "ok-2" },
+      { title: "ok-3" },
+      { title: "ok-4" },
+      { title: "bad", dependsOn: ["does-not-exist"] },
+    ];
+    const before = h.store.listTasks(teamID).length;
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add_many",
+        tasks: JSON.stringify(specs),
+        atomic: true,
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("validation failed for atomic add_many");
+    expect(result).toContain("does-not-exist");
+    expect(result).toContain("bad");
+    // Critical: zero side effects.
+    expect(h.store.listTasks(teamID).length).toBe(before);
+  });
+
+  test("add_many atomic=true rejects duplicate titles in the batch", async () => {
+    const specs = [
+      { title: "same" },
+      { title: "other" },
+      { title: "same" },
+    ];
+    const before = h.store.listTasks(teamID).length;
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add_many",
+        tasks: JSON.stringify(specs),
+        atomic: true,
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe(
+      'Error: validation failed for atomic add_many: duplicate title "same" in batch'
+    );
+    expect(h.store.listTasks(teamID).length).toBe(before);
+  });
+
+  test("add_many atomic=true rejects an in-batch circular dep (A→B, B→A)", async () => {
+    // With the "earlier-only" rule, a forward reference (A→B before B is
+    // declared) is itself unresolvable, so a circular pair fails the
+    // first link's dep check.
+    const specs = [
+      { title: "A", dependsOn: ["B"] },
+      { title: "B", dependsOn: ["A"] },
+    ];
+    const before = h.store.listTasks(teamID).length;
+    const result = await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add_many",
+        tasks: JSON.stringify(specs),
+        atomic: true,
+      },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("validation failed for atomic add_many");
+    expect(result).toContain("dependency \"B\"");
+    expect(h.store.listTasks(teamID).length).toBe(before);
+  });
+
+  test("add_many atomic=false (default) keeps partial-success behavior", async () => {
+    const specs = [
+      { title: "ps-1" },
+      { title: "ps-2" },
+      { title: "bad", dependsOn: ["nope"] },
+      { title: "ps-4" },
+    ];
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: JSON.stringify(specs) },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("dependency \"nope\" not found");
+    expect(result).toContain("created 2 tasks before failure");
+    const titles = h.store.listTasks(teamID).map((t) => t.title).sort();
+    // ps-1 and ps-2 persisted; bad and ps-4 did not.
+    expect(titles).toEqual(["ps-1", "ps-2"]);
+  });
 });
 
 // ─── orch_memo ────────────────────────────────────────────────────────
@@ -1266,6 +1480,117 @@ describe("orch_memo", () => {
     const desc = String(h.tools.orch_memo.description ?? "");
     expect(desc).toContain("scope");
     expect(desc).toContain("auth:jwt-secret");
+  });
+
+  test("append creates a new key when missing", async () => {
+    const result = await h.tools.orch_memo.execute(
+      { team: "mt", action: "append", key: "notes", value: "first line" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Appended to notes (1 entry)");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "notes" },
+      makeToolContext("lead-session")
+    );
+    expect(get).toBe("notes: first line");
+  });
+
+  test("append to an existing key joins with a newline", async () => {
+    const ctx = makeToolContext("lead-session");
+    await h.tools.orch_memo.execute(
+      { team: "mt", action: "set", key: "notes", value: "line 1" },
+      ctx
+    );
+    const result = await h.tools.orch_memo.execute(
+      { team: "mt", action: "append", key: "notes", value: "line 2" },
+      ctx
+    );
+    expect(result).toBe("Appended to notes (2 entries)");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "notes" },
+      ctx
+    );
+    expect(get).toBe("notes: line 1\nline 2");
+  });
+
+  test("multiple appends build up a multiline value", async () => {
+    const ctx = makeToolContext("lead-session");
+    for (const line of ["a", "b", "c", "d"]) {
+      await h.tools.orch_memo.execute(
+        { team: "mt", action: "append", key: "log", value: line },
+        ctx
+      );
+    }
+    const last = await h.tools.orch_memo.execute(
+      { team: "mt", action: "append", key: "log", value: "e" },
+      ctx
+    );
+    expect(last).toBe("Appended to log (5 entries)");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "log" },
+      ctx
+    );
+    expect(get).toBe("log: a\nb\nc\nd\ne");
+  });
+
+  test("prepend creates a new key when missing", async () => {
+    const result = await h.tools.orch_memo.execute(
+      { team: "mt", action: "prepend", key: "notes", value: "top" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Prepended to notes (1 entry)");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "notes" },
+      makeToolContext("lead-session")
+    );
+    expect(get).toBe("notes: top");
+  });
+
+  test("prepend to an existing key prepends with a newline", async () => {
+    const ctx = makeToolContext("lead-session");
+    await h.tools.orch_memo.execute(
+      { team: "mt", action: "set", key: "notes", value: "old" },
+      ctx
+    );
+    const result = await h.tools.orch_memo.execute(
+      { team: "mt", action: "prepend", key: "notes", value: "new" },
+      ctx
+    );
+    expect(result).toBe("Prepended to notes (2 entries)");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "notes" },
+      ctx
+    );
+    expect(get).toBe("notes: new\nold");
+  });
+
+  test("append/prepend error when key or value missing", async () => {
+    const ctx = makeToolContext("lead-session");
+    const appNoKey = await h.tools.orch_memo.execute(
+      { team: "mt", action: "append", value: "v" },
+      ctx
+    );
+    expect(appNoKey).toBe("Error: key is required for append");
+    const appNoVal = await h.tools.orch_memo.execute(
+      { team: "mt", action: "append", key: "k" },
+      ctx
+    );
+    expect(appNoVal).toBe("Error: value is required for append");
+    const preNoKey = await h.tools.orch_memo.execute(
+      { team: "mt", action: "prepend", value: "v" },
+      ctx
+    );
+    expect(preNoKey).toBe("Error: key is required for prepend");
+    const preNoVal = await h.tools.orch_memo.execute(
+      { team: "mt", action: "prepend", key: "k" },
+      ctx
+    );
+    expect(preNoVal).toBe("Error: value is required for prepend");
   });
 });
 
@@ -1588,7 +1913,7 @@ describe("orch_result", () => {
 
     // Top-level keys match the documented shape
     expect(Object.keys(parsed).sort()).toEqual(
-      ["failures", "results", "tasks", "team", "totalCost"].sort()
+      ["failures", "progress", "results", "tasks", "team", "totalCost"].sort()
     );
     expect(typeof parsed.team).toBe("string");
     expect(typeof parsed.totalCost).toBe("number");
@@ -1629,6 +1954,93 @@ describe("orch_result", () => {
     expect(desc).toContain("totalCost");
     expect(desc).toContain("results");
     expect(desc).toContain("failures");
+  });
+
+  test("summary format renders progress bar with percentage", async () => {
+    // Seed harness has 1 completed / 1 failed / 1 pending → 33% completed
+    const result = await h.tools.orch_result.execute(
+      { team: "rt" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Progress:");
+    expect(result).toMatch(/█/);
+    expect(result).toContain("33%");
+  });
+
+  test("progress bar shows 'no tasks' when the board is empty", async () => {
+    h.manager.createTeam("empty", "lead-session");
+    const result = await h.tools.orch_result.execute(
+      { team: "empty" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Progress: no tasks");
+  });
+
+  test("all-completed board renders 100% and a full bar", async () => {
+    h.manager.createTeam("all-done", "lead-session");
+    await h.tools.orch_spawn.execute(
+      { team: "all-done", role: "worker", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const allTeam = h.store.getTeamByName("all-done")!;
+    const workerSession = h.store.getMemberByRole(allTeam.id, "worker")!.sessionID;
+    await h.tools.orch_tasks.execute(
+      { team: "all-done", action: "add", title: "only-one" },
+      makeToolContext("lead-session")
+    );
+    const [t] = h.store.listTasks(allTeam.id);
+    await h.tools.orch_tasks.execute(
+      { team: "all-done", action: "claim", taskID: t.id },
+      makeToolContext(workerSession)
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "all-done", action: "complete", taskID: t.id, result: "ok" },
+      makeToolContext(workerSession)
+    );
+
+    const result = await h.tools.orch_result.execute(
+      { team: "all-done" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("100%");
+    expect(result).toContain("████████████████████");
+    expect(result).not.toMatch(/░/);
+  });
+
+  test("json format exposes a progress object with all five fields", async () => {
+    const result = await h.tools.orch_result.execute(
+      { team: "rt", format: "json" },
+      makeToolContext("lead-session")
+    );
+    const parsed = JSON.parse(result) as {
+      progress: {
+        percent: number;
+        completed: number;
+        failed: number;
+        remaining: number;
+        total: number;
+      };
+    };
+    expect(Object.keys(parsed.progress).sort()).toEqual(
+      ["completed", "failed", "percent", "remaining", "total"].sort()
+    );
+    expect(parsed.progress.percent).toBe(33);
+    expect(parsed.progress.completed).toBe(1);
+    expect(parsed.progress.failed).toBe(1);
+    expect(parsed.progress.remaining).toBe(1);
+    expect(parsed.progress.total).toBe(3);
+  });
+
+  test("detailed format also renders the progress bar header", async () => {
+    const result = await h.tools.orch_result.execute(
+      { team: "rt", format: "detailed" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain("Progress:");
+    expect(result).toMatch(/█/);
+    expect(result).toContain("33%");
+    // Detailed still shows the full multi-line body
+    expect(result).toContain("line2");
   });
 });
 
