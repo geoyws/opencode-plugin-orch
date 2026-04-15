@@ -1248,6 +1248,64 @@ describe("Store", () => {
       store2.destroy();
     });
 
+    test("migrates non-numeric lastActivityAt (e.g. corrupt string) to now", async () => {
+      // A hand-edited / otherwise corrupt snapshot can land a non-number
+      // in lastActivityAt. Falsy-only guard would miss this because a
+      // truthy string is not falsy, and the loader would pass it through
+      // — downstream `now - "bogus"` = NaN, and `NaN < timeout` is false,
+      // so the idle monitor would silently never fire for this member.
+      const snapPath = path.join(tmpDir, ".opencode", "plugin-orch", "snapshot.json");
+      fs.mkdirSync(path.dirname(snapPath), { recursive: true });
+      const now = Date.now();
+      const snap = {
+        timestamp: now,
+        teams: {
+          t1: {
+            id: "t1",
+            name: "Corrupt",
+            leadSessionID: "s1",
+            config: { workStealing: true, backpressureLimit: 50 },
+            createdAt: now,
+          },
+        },
+        members: {
+          m1: {
+            id: "m1",
+            teamID: "t1",
+            sessionID: "sess_1",
+            role: "worker",
+            state: "ready",
+            instructions: "x",
+            files: [],
+            escalationLevel: 0,
+            retryCount: 0,
+            createdAt: now,
+            lastActivityAt: "bogus" as unknown as number,
+          },
+        },
+        tasks: {},
+        messages: [],
+        costs: {},
+        locks: {},
+        scratchpads: {},
+      };
+      fs.writeFileSync(snapPath, JSON.stringify(snap), "utf-8");
+
+      const beforeLoad = Date.now();
+      const store2 = new Store(tmpDir);
+      await store2.init();
+      const afterLoad = Date.now();
+
+      const loaded = store2.getMember("m1");
+      expect(loaded).toBeDefined();
+      expect(typeof loaded!.lastActivityAt).toBe("number");
+      expect(Number.isFinite(loaded!.lastActivityAt)).toBe(true);
+      expect(loaded!.lastActivityAt).toBeGreaterThanOrEqual(beforeLoad);
+      expect(loaded!.lastActivityAt).toBeLessThanOrEqual(afterLoad);
+
+      store2.destroy();
+    });
+
     test("handles snapshot with missing required fields gracefully", async () => {
       // Hand-edited / partially-written snapshot that parses as JSON but
       // is missing the maps loadSnapshot() destructures. Without the

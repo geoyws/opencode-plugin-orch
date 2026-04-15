@@ -88,7 +88,12 @@ export class Store {
     const nowTs = Date.now();
     this.members = new Map(
       Object.entries(snap.members).map(([id, m]) => {
-        if (!m.lastActivityAt || m.lastActivityAt === 0) {
+        // Reject undefined, null, 0, NaN, negatives, strings, booleans —
+        // anything that isn't a positive finite number. A corrupt snapshot
+        // with a string lastActivityAt would otherwise sneak past a
+        // falsy-only check and poison `age` calculations with NaN.
+        const ts = (m as { lastActivityAt?: unknown }).lastActivityAt;
+        if (typeof ts !== "number" || !(ts > 0)) {
           return [id, { ...m, lastActivityAt: nowTs }];
         }
         return [id, m];

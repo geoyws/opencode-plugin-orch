@@ -358,10 +358,35 @@ export function createTasksTool(
           const roots = tasks.filter((t) => t.dependsOn.length === 0);
           const lines: string[] = [`Task dependency graph for "${team.name}":`];
 
-          const renderNode = (id: string, prefix: string, isLast: boolean): void => {
+          // Defensive: addTask validates deps so a cycle is unreachable
+          // via the public API, but a future mutation path could leave
+          // every task with an upstream dep. Surface that explicitly
+          // instead of rendering a silent header-only graph.
+          if (roots.length === 0 && tasks.length > 0) {
+            lines.push(
+              "  (no root tasks — graph may be cyclic or all tasks have upstream deps)"
+            );
+            return lines.join("\n");
+          }
+
+          // `visited` is per-path, not global: diamond dependencies
+          // legitimately need shared nodes to render multiple times, but
+          // cycles-on-the-same-path would otherwise stack-overflow. When
+          // we hit a node already on the current path, emit a [cycle]
+          // marker and bail out of that branch.
+          const renderNode = (
+            id: string,
+            prefix: string,
+            isLast: boolean,
+            visited: Set<string>
+          ): void => {
             const t = byID.get(id);
             if (!t) return;
             const branch = isLast ? "└─ " : "├─ ";
+            if (visited.has(id)) {
+              lines.push(`${prefix}${branch}${t.title}  [cycle]`);
+              return;
+            }
             const depHint =
               t.dependsOn.length > 0
                 ? ` (depends on ${t.dependsOn
@@ -369,18 +394,21 @@ export function createTasksTool(
                     .join(", ")})`
                 : "";
             lines.push(`${prefix}${branch}${t.title}  [${t.status}]${depHint}`);
+            const nextVisited = new Set(visited);
+            nextVisited.add(id);
             const childPrefix = prefix + (isLast ? "   " : "│  ");
             const kids = dependentsOf.get(t.id) ?? [];
             kids.forEach((kid, i) =>
-              renderNode(kid, childPrefix, i === kids.length - 1)
+              renderNode(kid, childPrefix, i === kids.length - 1, nextVisited)
             );
           };
 
           for (const root of roots) {
             lines.push(`  ${root.title}  [${root.status}]`);
             const kids = dependentsOf.get(root.id) ?? [];
+            const visited = new Set<string>([root.id]);
             kids.forEach((kid, i) =>
-              renderNode(kid, "  ", i === kids.length - 1)
+              renderNode(kid, "  ", i === kids.length - 1, visited)
             );
           }
 

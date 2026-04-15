@@ -1425,6 +1425,53 @@ describe("orch_tasks", () => {
     expect(String(result)).toContain("nope");
   });
 
+  test("deps warns when no root tasks exist (defensive empty-roots guard)", async () => {
+    // Build a normal A → B chain via the public API, then directly
+    // mutate A's dependsOn to point at B as well. addTask would reject
+    // this (cycle), but a future mutation path could leave the store in
+    // this state — the renderer should surface it instead of emitting a
+    // silent header-only graph.
+    const a = h.board.addTask(teamID, "rotA", "");
+    const b = h.board.addTask(teamID, "rotB", "", { dependsOn: [a.id] });
+    h.store.updateTask({ ...a, dependsOn: [b.id], version: a.version + 1 });
+
+    const result = String(
+      await h.tools.orch_tasks.execute(
+        { team: "tt", action: "deps" },
+        makeToolContext("lead-session")
+      )
+    );
+    expect(result).toContain('Task dependency graph for "tt"');
+    expect(result).toContain("(no root tasks");
+    expect(result).toContain("cyclic");
+  });
+
+  test("deps marks per-path cycles with a [cycle] marker instead of recursing forever", async () => {
+    // root → X → Y, then inject a back-edge X → Y so X also depends on
+    // Y. root stays a root (no deps), so the tree still has an entry
+    // point, but walking root → X → Y → X must hit the visited guard
+    // and emit [cycle] rather than overflowing the stack.
+    const root = h.board.addTask(teamID, "cyc-root", "");
+    const x = h.board.addTask(teamID, "cyc-X", "", { dependsOn: [root.id] });
+    const y = h.board.addTask(teamID, "cyc-Y", "", { dependsOn: [x.id] });
+    h.store.updateTask({
+      ...x,
+      dependsOn: [root.id, y.id],
+      version: x.version + 1,
+    });
+
+    const result = String(
+      await h.tools.orch_tasks.execute(
+        { team: "tt", action: "deps" },
+        makeToolContext("lead-session")
+      )
+    );
+    expect(result).toContain("cyc-root");
+    expect(result).toContain("cyc-X");
+    expect(result).toContain("cyc-Y");
+    expect(result).toContain("[cycle]");
+  });
+
   test("deps renders a diamond — shared task appears under each parent (duplicate-render)", async () => {
     // A is the root; B and C depend on A; D depends on both B and C.
     // With duplicate-render semantics, D should appear once in B's
@@ -3050,6 +3097,26 @@ describe("orch_log", () => {
     expect(result).toContain("freshest line");
     expect(result).not.toContain("ancient line");
     expect(result).toContain("a-latest.log");
+  });
+
+  test("mtime tiebreaker by name — identical mtime files break by descending name", async () => {
+    // Coarse-mtime filesystems (FAT/exFAT/SMB, some overlays) round
+    // mtime to the second. Two log files written in the same bucket
+    // would otherwise sort by readdir order. The name tiebreaker is
+    // descending, so the lexically-greater (Feb) ISO timestamp wins.
+    writeLog("2026-01-01T000000.log", "INFO [orch] january line");
+    writeLog("2026-02-01T000000.log", "INFO [orch] february line");
+    const stamp = new Date(Date.now() - 30_000);
+    fs.utimesSync(path.join(tmpLogDir, "2026-01-01T000000.log"), stamp, stamp);
+    fs.utimesSync(path.join(tmpLogDir, "2026-02-01T000000.log"), stamp, stamp);
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "tail" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("february line");
+    expect(result).not.toContain("january line");
+    expect(result).toContain("2026-02-01T000000.log");
   });
 
   test("resolveLogDir prefers Linux path on linux and macOS path on darwin", () => {

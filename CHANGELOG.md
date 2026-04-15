@@ -13,6 +13,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - feat: `orch_team` tool — `list` shows all teams with active/total member
   counts and task totals; `info` shows a detailed block for one team
   including members, tasks, and recent messages (aa5e177)
+- feat: `orch_log` tool — inspect the current opencode log for plugin
+  output. Actions: `tail` (last N matching lines, default 20, max 200),
+  `errors` (ERROR-level lines only), `stats` (INFO/WARN/ERROR counts).
+  Filters lines containing `[orch]` or `opencode-plugin-orch` (9782410)
+- feat: per-team rate limits, `orch_tasks add_many` (atomic batch),
+  reassign no-op detection, and ADR-004 closed-allowlist member tool
+  scoping via `client.tool.ids()` lookup with 500ms timeout (90edec4)
+- feat: round 7 — snapshot corruption recovery, idle-member monitor,
+  broadcast role/agent filter, task `progress` field, task priority,
+  `orch_memo append` action, atomic `orch_tasks add_many`, and
+  `examples/feature-build-demo.md` getting-started walkthrough (a2a1396)
+- feat: round 9 — platform-aware log-dir lookup (`resolveLogDir`),
+  `tool.execute.before` activity hook, snapshot migration for pre-feature
+  members missing `lastActivityAt`, and task dependency visualizer
+  (269ce36)
 - feat: `orch_tasks add` now accepts task **titles** in `dependsOn`, not
   just IDs. Each entry is tried as an ID first, then as a
   case-insensitive exact title match in the same team. Raw IDs still work
@@ -29,10 +44,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   messages by default, 20 untruncated in verbose mode, `(none)` when empty
   (adbbf40)
 - feat: `README.md` with install, usage, and tool reference (adbbf40)
+- feat: member tool scoping defaults + per-tool rate limiting +
+  `orch_tasks unblock` action + `orch_result` JSON schema docs (b8f413a)
+- docs: ADR-001 (live-test model choice) and full evidence log of
+  `orch_create` / spawn / status / shutdown against a live opencode run
+  (0b68d76, 877d2c0)
 - ci: GitHub Actions workflow `.github/workflows/test.yml` runs typecheck
   and `bun test` on push + PR to master (aa5e177)
-- test: full e2e evidence log capturing `orch_create` → spawn → status →
-  shutdown against a live opencode run (877d2c0)
 - test: new `tests/revalidation.test.ts` — 4 tests covering dead-session
   cleanup, live-session preservation, timeout fallback, and
   terminal-member skip (aa5e177)
@@ -44,8 +62,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   by accident. `orch_status` now resolves the sender by design (adbbf40)
 - refactor: removed the `./tui` exports subpath and `src/tui.ts` stub —
   the placeholder confused the plugin-entrypoint story (aa5e177)
+- chore: ollama log-noise cleanup so the plugin doesn't spam idle
+  ollama models on every event (aa5e177)
+- refactor: round 6 — strict-parse tightening on tool inputs after
+  reviewer findings (d33a3fa)
 
 ### Fixed
+- fix: `package.json` `./server` exports subpath so opencode's plugin
+  discovery actually resolves the entry. Without it, opencode logged
+  `plugin has no server entrypoint` and the 12 `orch_*` tools never
+  registered (0b68d76)
+- fix: hardening pass from reviewer nits — orphaned init leak,
+  `_safe.ts` cwd bug, stack stripping in error reporter (3e7f325)
+- fix: round 5 nit fixes — `client.tool.ids()` 500ms timeout to keep a
+  hung opencode from blocking spawn, plus a follow-up closed-allowlist
+  end-to-end test (7e1c108)
+- fix: round 8 nits + `orch_log` initial implementation (9782410)
 - fix(ci): skip `tests/e2e.test.ts` in CI where the `opencode` binary
   isn't available (8245a86)
 

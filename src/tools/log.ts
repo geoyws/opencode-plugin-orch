@@ -86,7 +86,13 @@ export function createLogTool(opts: LogToolOptions = {}): ToolDefinition {
               (x): x is { name: string; fullPath: string; mtime: number } =>
                 x !== null
             )
-            .sort((a, b) => b.mtime - a.mtime);
+            // Tiebreaker by name: coarse-mtime filesystems (FAT, exFAT,
+            // SMB, some container overlays) round mtime to the nearest
+            // second or worse, so two log files written in the same
+            // bucket would otherwise be ordered by readdir's whim. The
+            // name compare is descending so an ISO-timestamp filename
+            // like 2026-02-01... beats 2026-01-01... when mtimes tie.
+            .sort((a, b) => b.mtime - a.mtime || b.name.localeCompare(a.name));
         } catch (err) {
           return `Error reading log directory ${logDir}: ${
             err instanceof Error ? err.message : String(err)
