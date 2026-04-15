@@ -21,8 +21,11 @@ const INIT_TIMEOUT_MS = 5000;
 
 function parsePositiveInt(v: string | undefined, fallback: number): number {
   if (!v) return fallback;
-  const n = Number.parseInt(v, 10);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  // Strict parse: Number("60abc") is NaN, unlike parseInt which would
+  // lenient-parse it to 60. We want env vars to be either a clean
+  // positive integer or a clear fallback, not silently truncated.
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
 export function parseRateLimitEnv(env: NodeJS.ProcessEnv = process.env): {

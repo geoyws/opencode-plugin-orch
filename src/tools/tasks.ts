@@ -19,7 +19,8 @@ export function createTasksTool(
       "unblock (clear all dependencies on an available task — escape hatch when an upstream dep is stuck), " +
       "reassign (move a claimed task to a different member by role — avoids going through fail), " +
       "add_many (bulk-add multiple tasks from a JSON array; later tasks can depend on earlier ones by title; " +
-      "NOT atomic — on failure, already-created tasks are kept and the error reports the partial count). " +
+      "NOT atomic — on failure, already-created tasks are kept and the error reports the partial count; " +
+      "if two specs in the same call share a title, later by-title dependency lookups resolve to the most recently created task). " +
       "Tasks with unmet dependencies cannot be claimed. Completed tasks auto-unblock dependents.",
     args: {
       team: tool.schema.string().describe("Team name"),

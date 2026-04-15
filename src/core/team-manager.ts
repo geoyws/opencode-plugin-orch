@@ -174,10 +174,11 @@ export class TeamManager {
     // thing we lose in the fallback path is closed-allowlist semantics
     // for *future* orch_* tools the caller forgot to register here.
     let knownToolIds: string[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("tool.ids timeout")), 500)
-      );
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("tool.ids timeout")), 500);
+      });
       const toolIdsRes = await Promise.race([
         this.ctx.client.tool.ids(),
         timeout,
@@ -186,6 +187,8 @@ export class TeamManager {
       if (Array.isArray(data)) knownToolIds = data as string[];
     } catch {
       // Network error, timeout, or unexpected shape — fall back to empty.
+    } finally {
+      if (timer) clearTimeout(timer);
     }
 
     const toolsAllowed = computeMemberToolsAllowed(opts.toolsAllowed, knownToolIds);

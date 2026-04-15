@@ -127,11 +127,25 @@ describe("RateLimiterRegistry", () => {
     expect(cfg.windowMs).toBe(60_000);
   });
 
-  test("parseRateLimitEnv is lenient: '60abc' parses to 60", () => {
-    // Documents current parseInt semantics — trailing non-numeric chars
-    // are tolerated. Tighten to Number(v) if strict parsing is wanted.
+  test("parseRateLimitEnv rejects trailing garbage: '99abc' → fallback", () => {
+    // Strict parse via Number(v): any non-numeric tail is rejected and
+    // we fall back to the default rather than silently truncating.
+    // Use 99 (non-default) so a regression to parseInt would yield 99
+    // and fail this assertion — if we used "60abc" the test would pass
+    // whether the parser is strict or lenient because 60 is also the
+    // default maxCalls.
     const cfg = parseRateLimitEnv({
-      ORCH_RATE_LIMIT_MAX_CALLS: "60abc",
+      ORCH_RATE_LIMIT_MAX_CALLS: "99abc",
+    });
+    expect(cfg.maxCalls).toBe(60); // fell back to default, didn't parse to 99
+  });
+
+  test("parseRateLimitEnv rejects floats: '99.5' → fallback", () => {
+    // Integer-only — floats fall back too. 99.5 chosen so a lenient
+    // parser returning 99 would fail instead of accidentally matching
+    // the default of 60.
+    const cfg = parseRateLimitEnv({
+      ORCH_RATE_LIMIT_MAX_CALLS: "99.5",
     });
     expect(cfg.maxCalls).toBe(60);
   });

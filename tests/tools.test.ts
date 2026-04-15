@@ -224,6 +224,38 @@ describe("orch_spawn", () => {
     expect(h.client.callsFor("tool.ids")).toHaveLength(1);
   });
 
+  test("spawn falls back to defaults when tool.ids hangs past 500ms", async () => {
+    // Monkey-patch the stub to never resolve — exercises the 500ms
+    // Promise.race branch in spawnMember so a real hung registry
+    // endpoint can't freeze the plugin.
+    h.client.tool.ids = () => new Promise(() => {});
+
+    const start = Date.now();
+    await h.tools.orch_spawn.execute(
+      { team: "t1", role: "hang-worker", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const elapsed = Date.now() - start;
+
+    // Spawn must complete — not hang indefinitely. 500ms timeout +
+    // generous 200ms slack for test machine noise.
+    expect(elapsed).toBeLessThan(700);
+
+    // With empty knownToolIds, the closure never runs, so an unknown
+    // orch_* tool is absent from the tools record entirely (undefined,
+    // not false). The downside of the fallback path: we can't close
+    // future orch_* tools. The upside: MEMBER_TOOL_DEFAULTS still
+    // covers everything we know about.
+    const calls = h.client.callsFor("session.promptAsync");
+    const spawnCall = calls[calls.length - 1];
+    const tools = (spawnCall.args as { body: { tools: Record<string, boolean> } }).body.tools;
+    expect(tools.orch_frobnicate).toBeUndefined();
+
+    // Known defaults still present via MEMBER_TOOL_DEFAULTS.
+    expect(tools.orch_create).toBe(false);
+    expect(tools.orch_message).toBe(true);
+  });
+
   test("toolsAllowed arg merges on top of defaults (true overrides default false)", async () => {
     await h.tools.orch_spawn.execute(
       {
@@ -1049,6 +1081,30 @@ describe("orch_tasks", () => {
     for (const leaf of leaves) {
       expect(leaf.dependsOn).toEqual([root.id]);
     }
+  });
+
+  test("add_many: duplicate title in same call — later wins for by-title deps", async () => {
+    const specs = [
+      { title: "dup" },
+      { title: "dup" },
+      { title: "dependent", dependsOn: ["dup"] },
+    ];
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: JSON.stringify(specs) },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Added 3 tasks");
+
+    const tasks = h.store.listTasks(teamID);
+    const dups = tasks
+      .filter((t) => t.title === "dup")
+      .sort((a, b) => a.createdAt - b.createdAt);
+    expect(dups).toHaveLength(2);
+    const dependent = tasks.find((t) => t.title === "dependent")!;
+    // "later wins": the dependent resolves to the second (most recently
+    // created) "dup", not the first.
+    expect(dependent.dependsOn).toEqual([dups[1].id]);
+    expect(dependent.dependsOn).not.toEqual([dups[0].id]);
   });
 });
 
