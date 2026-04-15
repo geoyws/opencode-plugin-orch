@@ -19,6 +19,7 @@ import { createShutdownTool } from "./shutdown.js";
 import { createResultTool } from "./result.js";
 import { createInboxTool } from "./inbox.js";
 import { createTeamTool } from "./team.js";
+import { createLogTool } from "./log.js";
 
 export interface ToolDeps {
   manager: TeamManager;
@@ -45,5 +46,6 @@ export function createTools(deps: ToolDeps): Record<string, ToolDefinition> {
     orch_result: createResultTool(deps.manager, deps.board, deps.costs, deps.store, deps.rateLimiter),
     orch_inbox: createInboxTool(deps.manager, deps.store, deps.rateLimiter),
     orch_team: createTeamTool(deps.manager, deps.store, deps.rateLimiter),
+    orch_log: createLogTool(),
   };
 }

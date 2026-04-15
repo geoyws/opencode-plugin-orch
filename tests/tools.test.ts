@@ -2,9 +2,13 @@
 // against a real Store + TeamManager + (mocked) SDK client.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { createHarness, makeToolContext, type Harness } from "./_harness.js";
 import { createTools } from "../src/tools/index.js";
 import { RateLimiterRegistry } from "../src/core/rate-limit.js";
+import { createLogTool } from "../src/tools/log.js";
 
 // ─── orch_create ──────────────────────────────────────────────────────
 describe("orch_create", () => {
@@ -1280,10 +1284,14 @@ describe("orch_tasks", () => {
     expect(h.store.listTasks(teamID).length).toBe(before);
   });
 
-  test("add_many atomic=true rejects an in-batch circular dep (A→B, B→A)", async () => {
-    // With the "earlier-only" rule, a forward reference (A→B before B is
-    // declared) is itself unresolvable, so a circular pair fails the
-    // first link's dep check.
+  test("add_many atomic rejects forward-ref cycle via declare-before-use rule", async () => {
+    // The "earlier-only" rule in atomic validation makes forward refs
+    // impossible — A's dep on B fails because B isn't in the batchTitles
+    // set yet. This happens to catch cycles (A→B, B→A), but the mechanism
+    // is declare-before-use rejection, not topological cycle detection.
+    // If we ever add true forward-ref support, this test's name will
+    // become accurate but the implementation will need actual cycle
+    // detection.
     const specs = [
       { title: "A", dependsOn: ["B"] },
       { title: "B", dependsOn: ["A"] },
@@ -1591,6 +1599,59 @@ describe("orch_memo", () => {
       ctx
     );
     expect(preNoVal).toBe("Error: value is required for prepend");
+  });
+
+  test("append accepts an empty string to add a blank line to an existing memo", async () => {
+    const ctx = makeToolContext("lead-session");
+    await h.tools.orch_memo.execute(
+      { team: "mt", action: "set", key: "log", value: "first" },
+      ctx
+    );
+    const result = await h.tools.orch_memo.execute(
+      { team: "mt", action: "append", key: "log", value: "" },
+      ctx
+    );
+    expect(result).toBe("Appended to log (2 entries)");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "log" },
+      ctx
+    );
+    expect(get).toBe("log: first\n");
+  });
+
+  test("append with empty string on a missing key creates an empty memo", async () => {
+    const ctx = makeToolContext("lead-session");
+    const result = await h.tools.orch_memo.execute(
+      { team: "mt", action: "append", key: "blank", value: "" },
+      ctx
+    );
+    expect(result).toBe("Appended to blank (1 entry)");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "blank" },
+      ctx
+    );
+    expect(get).toBe("blank: ");
+  });
+
+  test("prepend accepts an empty string for blank-line semantics", async () => {
+    const ctx = makeToolContext("lead-session");
+    await h.tools.orch_memo.execute(
+      { team: "mt", action: "set", key: "log", value: "old" },
+      ctx
+    );
+    const result = await h.tools.orch_memo.execute(
+      { team: "mt", action: "prepend", key: "log", value: "" },
+      ctx
+    );
+    expect(result).toBe("Prepended to log (2 entries)");
+
+    const get = await h.tools.orch_memo.execute(
+      { team: "mt", action: "get", key: "log" },
+      ctx
+    );
+    expect(get).toBe("log: \nold");
   });
 });
 
@@ -2770,5 +2831,189 @@ describe("per-team rate limit config", () => {
     );
     expect(tbBlocked).toContain("rate limit exceeded");
     expect(tbBlocked).toContain("(5 calls/min)");
+  });
+});
+
+// ─── orch_log ─────────────────────────────────────────────────────────
+// Tests stand up a temp log dir and inject it via createLogTool's
+// findLogDir hook. Doesn't touch the shared harness because the log
+// tool has no core deps — it reads the filesystem directly and is
+// easiest to drive against a disposable tmpdir.
+describe("orch_log", () => {
+  let tmpLogDir: string;
+
+  function writeLog(name: string, content: string): void {
+    fs.writeFileSync(path.join(tmpLogDir, name), content, "utf-8");
+  }
+
+  beforeEach(() => {
+    tmpLogDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-log-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpLogDir, { recursive: true, force: true });
+  });
+
+  test("tail returns the last N plugin lines from the most recent log", async () => {
+    writeLog(
+      "2026-04-15T000000.log",
+      [
+        "INFO service=other unrelated line",
+        "INFO service=opencode-plugin-orch message=first",
+        "INFO [orch] toast fired for spawn",
+        "WARN service=opencode-plugin-orch message=slow",
+        "INFO service=other another unrelated",
+        "ERROR [orch] boom",
+      ].join("\n")
+    );
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "tail", lines: 10 },
+      makeToolContext("lead-session")
+    )) as string;
+    // All 4 plugin lines present, unrelated lines absent
+    expect(result).toContain("first");
+    expect(result).toContain("toast fired for spawn");
+    expect(result).toContain("slow");
+    expect(result).toContain("boom");
+    expect(result).not.toContain("unrelated");
+    expect(result).toContain("2026-04-15T000000.log");
+  });
+
+  test("tail picks the lexically-last .log file (most recent)", async () => {
+    writeLog("2026-04-14T000000.log", "INFO [orch] old line");
+    writeLog("2026-04-15T000000.log", "INFO [orch] new line");
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "tail" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("new line");
+    expect(result).not.toContain("old line");
+    expect(result).toContain("2026-04-15T000000.log");
+  });
+
+  test("tail respects a user-supplied lines arg", async () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `INFO [orch] line ${i}`);
+    writeLog("2026-04-15T000000.log", lines.join("\n"));
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "tail", lines: 5 },
+      makeToolContext("lead-session")
+    )) as string;
+    // Only the last 5 should appear
+    expect(result).toContain("line 15");
+    expect(result).toContain("line 19");
+    expect(result).not.toContain("line 14");
+    expect(result).toContain("Last 5 plugin line(s)");
+  });
+
+  test("tail clamps lines to 200 when a huge value is passed", async () => {
+    // 300 plugin lines. Passing lines: 500 should clamp to 200, so only
+    // the last 200 (indices 100..299) should appear and earlier ones
+    // should NOT.
+    const lines = Array.from({ length: 300 }, (_, i) => `INFO [orch] line ${i}`);
+    writeLog("2026-04-15T000000.log", lines.join("\n"));
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "tail", lines: 500 },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("Last 200 plugin line(s)");
+    expect(result).toContain("line 100");
+    expect(result).toContain("line 299");
+    expect(result).not.toContain("line 99");
+    expect(result).not.toContain("line 0 ");
+  });
+
+  test("errors filters to ERROR-level plugin lines only", async () => {
+    writeLog(
+      "2026-04-15T000000.log",
+      [
+        "INFO [orch] good thing",
+        "WARN service=opencode-plugin-orch hmm",
+        "ERROR [orch] bad thing",
+        "ERROR service=opencode-plugin-orch also bad",
+        "ERROR service=other not ours",
+      ].join("\n")
+    );
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "errors" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("bad thing");
+    expect(result).toContain("also bad");
+    expect(result).not.toContain("good thing");
+    expect(result).not.toContain("hmm");
+    expect(result).not.toContain("not ours"); // other service, not ours
+    expect(result).toContain("2 plugin error line(s)");
+  });
+
+  test("errors reports cleanly when no plugin errors are present", async () => {
+    writeLog("2026-04-15T000000.log", "INFO [orch] all good");
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "errors" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("No plugin errors");
+  });
+
+  test("stats counts INFO, WARN, ERROR separately", async () => {
+    writeLog(
+      "2026-04-15T000000.log",
+      [
+        "INFO [orch] a",
+        "INFO service=opencode-plugin-orch b",
+        "INFO service=opencode-plugin-orch c",
+        "WARN [orch] d",
+        "ERROR [orch] e",
+        "ERROR [orch] f",
+        // Non-plugin line — must not count
+        "INFO service=other z",
+      ].join("\n")
+    );
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "stats" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("3 INFO");
+    expect(result).toContain("1 WARN");
+    expect(result).toContain("2 ERROR");
+  });
+
+  test("returns a friendly error when the log dir cannot be located", async () => {
+    const logTool = createLogTool({ findLogDir: () => undefined });
+    const result = (await logTool.execute!(
+      { action: "tail" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("Error");
+    expect(result).toContain("could not locate opencode log directory");
+  });
+
+  test("returns a friendly error when the log dir is empty", async () => {
+    // Empty tmpLogDir — no .log files in it.
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "tail" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("No log files found");
+  });
+
+  test("reports no plugin lines when the log contains only non-plugin lines", async () => {
+    writeLog(
+      "2026-04-15T000000.log",
+      ["INFO service=other one", "INFO service=other two"].join("\n")
+    );
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "tail" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("No plugin lines");
   });
 });

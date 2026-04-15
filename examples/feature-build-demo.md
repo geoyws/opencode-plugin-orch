@@ -6,13 +6,13 @@ An end-to-end walkthrough of using `opencode-plugin-orch` to coordinate a multi-
 
 - `opencode-plugin-orch` installed (see [README.md](../README.md#installation)).
 - `opencode` running with a working model (Claude, minimax, or whatever you've wired up).
-- The 11 `orch_*` tools visible in your lead session. Verify with:
+- The 12 `orch_*` tools visible in your lead session. Verify with:
 
   ```
   opencode run "what orch_* tools do you have?"
   ```
 
-  You should see `orch_create`, `orch_spawn`, `orch_message`, `orch_broadcast`, `orch_tasks`, `orch_memo`, `orch_status`, `orch_inbox`, `orch_team`, `orch_result`, `orch_shutdown`. If fewer than 11 show up, see [Troubleshooting](#troubleshooting).
+  You should see `orch_create`, `orch_spawn`, `orch_message`, `orch_broadcast`, `orch_tasks`, `orch_memo`, `orch_status`, `orch_inbox`, `orch_team`, `orch_result`, `orch_shutdown`, `orch_log`. If fewer than 12 show up, see [Troubleshooting](#troubleshooting).
 
 ## Scenario
 
@@ -119,7 +119,7 @@ Once the task board is empty and everyone is back to `ready`:
 
 ## Troubleshooting
 
-- **Plugin didn't load.** Check `~/.local/share/opencode/log/` for `[orch] ready · 11 tools`. If missing, you'll also see `plugin has no server entrypoint` — rebuild via `pnpm run build` and verify `package.json` has a `./server` entry in `exports`. See [ADR-003](../docs/adr/ADR-003-plugin-entrypoint-discovery.md) for the full story.
+- **Plugin didn't load.** Check `~/.local/share/opencode/log/` for `[orch] ready · 12 tools`. The fastest check is `orch_log` itself: `orch_log action=tail lines=30` (once the plugin is loaded). If missing, you'll also see `plugin has no server entrypoint` — rebuild via `pnpm run build` and verify `package.json` has a `./server` entry in `exports`. See [ADR-003](../docs/adr/ADR-003-plugin-entrypoint-discovery.md) for the full story.
 - **Member stuck in `initializing`.** Open the member's underlying opencode session via the TUI switcher — it's probably hung on an LLM call. `orch_shutdown` the team and retry with a faster model.
 - **Rate limit errors during Step 3.** The default per-tool rate limit is generous but the architect's decomposition burst can trip it. Raise it on the team at create time: `"Create a feature-build team dark-mode-v1 with rateLimit 120/60s"`.
 - **Unknown `orch_frobnicate` tool warnings.** Shouldn't happen, but if you see one, check [ADR-004](../docs/adr/ADR-004-member-tool-scoping-semantics.md) — it's the allowlist closure doing its job.

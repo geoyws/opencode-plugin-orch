@@ -115,4 +115,20 @@ describe("IdleMonitor", () => {
     h.store.updateMember({ ...updated, lastActivityAt: Date.now() - 120_000 });
     expect(monitor.sweep()).toBe(1);
   });
+
+  test("pre-feature snapshot member (lastActivityAt=0) uses createdAt as baseline", async () => {
+    const { member } = await setupTeamWithMember(h, "w", { idleTimeoutMs: 600_000 });
+    // Simulate a member loaded from a pre-feature snapshot: lastActivityAt
+    // is 0, and createdAt is 5 minutes ago (well under the 10min timeout).
+    const current = h.store.getMember(member.id)!;
+    const fiveMinAgo = Date.now() - 5 * 60_000;
+    h.store.updateMember({ ...current, lastActivityAt: 0, createdAt: fiveMinAgo });
+
+    const monitor = new IdleMonitor(h.store, h.reporter);
+    // First sweep: 5min < 10min timeout → no warning
+    expect(monitor.sweep()).toBe(0);
+
+    // Advance "now" past the 10min threshold (pass explicit now)
+    expect(monitor.sweep(fiveMinAgo + 11 * 60_000)).toBe(1);
+  });
 });

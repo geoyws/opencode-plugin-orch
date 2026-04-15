@@ -58,6 +58,7 @@ describe("createPermissionHook — git safety", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -270,6 +271,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -295,6 +297,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -317,6 +320,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -339,6 +343,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -361,6 +366,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -386,6 +392,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -417,6 +424,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -446,6 +454,7 @@ describe("createPermissionHook — file lock enforcement", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -480,6 +489,7 @@ describe("createPermissionHook — ordering", () => {
       isMemberSession: (id: string) => id === "member-session-1",
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockFileLocks = {
@@ -862,6 +872,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -917,6 +928,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -941,6 +953,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -965,6 +978,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -989,6 +1003,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -1016,6 +1031,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -1040,6 +1056,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -1065,6 +1082,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -1125,6 +1143,7 @@ describe("createActivityHook", () => {
     const mockManager = {
       getMemberBySession: (id: string) =>
         id === "member-session-1" ? fakeMember : undefined,
+      touchMember: () => {},
     } as any;
 
     const mockTracker = {
@@ -1141,5 +1160,48 @@ describe("createActivityHook", () => {
     );
 
     expect(capturedTarget).toBe("");
+  });
+
+  test("calls touchMember for member session tool call", async () => {
+    let touchedWith: string | null = null;
+
+    const mockManager = {
+      getMemberBySession: (id: string) =>
+        id === "member-session-1" ? fakeMember : undefined,
+      touchMember: (memberID: string) => {
+        touchedWith = memberID;
+      },
+    } as any;
+
+    const mockTracker = { record: () => {} } as any;
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
+
+    await hook(
+      { tool: "bash", sessionID: "member-session-1", callID: "call-t1", args: { command: "pwd" } },
+      { title: "bash", output: "/", metadata: {} }
+    );
+
+    expect(touchedWith).toBe("member-1");
+  });
+
+  test("does NOT call touchMember for non-member session", async () => {
+    let touchCalls = 0;
+
+    const mockManager = {
+      getMemberBySession: () => undefined,
+      touchMember: () => {
+        touchCalls++;
+      },
+    } as any;
+
+    const mockTracker = { record: () => {} } as any;
+    const hook = createActivityHook(mockManager, mockTracker, "/tmp");
+
+    await hook(
+      { tool: "bash", sessionID: "external", callID: "call-t2", args: { command: "pwd" } },
+      { title: "bash", output: "/", metadata: {} }
+    );
+
+    expect(touchCalls).toBe(0);
   });
 });

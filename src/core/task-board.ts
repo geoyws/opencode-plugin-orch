@@ -200,8 +200,14 @@ export class TaskBoard {
       if (memberRole.toLowerCase().includes(tag.toLowerCase())) score += 2;
       if (tag.toLowerCase().includes(memberRole.toLowerCase())) score += 2;
     }
-    // Priority dominates role-match so a p=1 task always outranks a p=0 task.
-    score += (task.priority ?? 0) * 1000;
+    // Priority weight constant: * 1000. This ensures priority 1 dominates
+    // role-match scoring under any realistic tag count. Role-match bonus is
+    // +2 per matching tag (bidirectional, so up to +4 per tag), so a priority
+    // of 1 outranks up to 250 tag matches. If a future task ever has
+    // hundreds of tags, this invariant breaks — at that point, consider
+    // bumping the weight or using a tiered comparator instead of scalar sum.
+    const priorityWeight = (task.priority ?? 0) * 1000;
+    score += priorityWeight;
     return score;
   }
 

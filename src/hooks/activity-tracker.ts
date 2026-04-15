@@ -34,6 +34,10 @@ export function createActivityHook(
       }
 
       tracker.record(member.id, input.tool, target);
+      // Bump lastActivityAt so IdleMonitor considers the member active.
+      // A member running a long tool call (e.g. bash) never transitions
+      // state, so without this the idle monitor would flag them as stuck.
+      manager.touchMember(member.id);
     } catch (err) {
       // Activity tracking is purely informational — on failure, silently
       // skip recording. Never crash the host.

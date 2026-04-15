@@ -14,7 +14,8 @@ export function genID(prefix: string): string {
 // that were forgotten here still default to deny.
 //
 // orch_create / orch_spawn are denied to prevent recursive team creation;
-// orch_inbox / orch_team / orch_shutdown are lead-only; webfetch is opt-in.
+// orch_inbox / orch_team / orch_shutdown / orch_log are lead-only;
+// webfetch is opt-in.
 export const MEMBER_TOOL_DEFAULTS: Record<string, boolean> = {
   read: true,
   write: true,
@@ -34,6 +35,7 @@ export const MEMBER_TOOL_DEFAULTS: Record<string, boolean> = {
   orch_create: false,
   orch_spawn: false,
   orch_shutdown: false,
+  orch_log: false,
 };
 
 /**

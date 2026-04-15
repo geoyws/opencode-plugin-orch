@@ -150,7 +150,7 @@ export class MockClient {
           "read", "write", "edit", "bash", "glob", "grep",
           "orch_create", "orch_spawn", "orch_message", "orch_broadcast",
           "orch_tasks", "orch_memo", "orch_status", "orch_shutdown",
-          "orch_result", "orch_inbox", "orch_team",
+          "orch_result", "orch_inbox", "orch_team", "orch_log",
           "orch_frobnicate",
         ],
       };

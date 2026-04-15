@@ -115,7 +115,9 @@ export function createMemoTool(
 
         case "append": {
           if (!args.key) return "Error: key is required for append";
-          if (!args.value) return "Error: value is required for append";
+          // Allow value="" so callers can intentionally add a blank line
+          // to a log-style memo. `set` still rejects empty values.
+          if (args.value === undefined) return "Error: value is required for append";
           const current = pad.get(team.id, args.key);
           const next = current === undefined ? args.value : `${current}\n${args.value}`;
           pad.set(team.id, args.key, next);
@@ -125,7 +127,7 @@ export function createMemoTool(
 
         case "prepend": {
           if (!args.key) return "Error: key is required for prepend";
-          if (!args.value) return "Error: value is required for prepend";
+          if (args.value === undefined) return "Error: value is required for prepend";
           const current = pad.get(team.id, args.key);
           const next = current === undefined ? args.value : `${args.value}\n${current}`;
           pad.set(team.id, args.key, next);

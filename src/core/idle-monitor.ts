@@ -52,7 +52,15 @@ export class IdleMonitor {
             this.warned.delete(member.id);
             continue;
           }
-          const age = now - (member.lastActivityAt ?? 0);
+          // Fall back to createdAt when lastActivityAt is missing or 0
+          // (pre-feature snapshot). Without this, every ready member loaded
+          // from an old snapshot would compute `age = now - 0` and warn on
+          // the first sweep after upgrade.
+          const activityTs =
+            member.lastActivityAt && member.lastActivityAt > 0
+              ? member.lastActivityAt
+              : member.createdAt;
+          const age = now - activityTs;
           if (age < timeout) {
             this.warned.delete(member.id);
             continue;

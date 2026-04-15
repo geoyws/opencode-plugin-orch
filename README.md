@@ -4,7 +4,7 @@ Agent team orchestration plugin for [OpenCode](https://opencode.ai). Lets a lead
 
 ## What it does
 
-Adds 11 tools to your opencode session:
+Adds 12 tools to your opencode session:
 
 | Tool | Purpose |
 |---|---|
@@ -19,6 +19,7 @@ Adds 11 tools to your opencode session:
 | `orch_result` | Aggregate completed-task outputs in summary / detailed / json format |
 | `orch_inbox` | Team-lead durable inbox for peer (member → member) DMs — list / count / mark_read |
 | `orch_team` | List, inspect, and prune agent teams (handy after smoke tests) |
+| `orch_log` | Inspect the current opencode log for plugin output — tail / errors / stats |
 
 Features:
 
@@ -29,7 +30,7 @@ Features:
 - **Cost tracking + budget enforcement** — per-member/per-team spend tracked from assistant messages; budget overrun auto-shuts the team down.
 - **Model escalation** — configurable retry chain (e.g. haiku → sonnet → opus) on member errors.
 - **Crash recovery** — event-sourced JSONL store with periodic snapshot + replay.
-- **Hardened error surfacing** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `init.log`). All hooks and tools are wrapped so throws can't break opencode. On startup you see `[orch] ready · 11 tools` as a success toast.
+- **Hardened error surfacing** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `init.log`). All hooks and tools are wrapped so throws can't break opencode. On startup you see `[orch] ready · 12 tools` as a success toast.
 - **Three-tier lead visibility for peer DMs** — when members message each other via `orch_message` / `orch_broadcast`, the lead sees it three ways: (1) **push** — a TUI toast fires immediately from the message bus; (2) **pull** — `orch_status` renders a `Recent messages:` section with the last few peer DMs; (3) **durable** — `orch_inbox` is an event-sourced queue with a `leadInboxLastSeenAt` cursor per team so the lead never misses messages across sessions. See [ADR-002](docs/adr/ADR-002-three-tier-lead-visibility.md).
 
 ## Installation
@@ -96,14 +97,14 @@ ls -t "$LOG_DIR" | head -1 | xargs -I{} grep -E "orch|plugin" "$LOG_DIR/{}"
 Required signals:
 
 - `service=plugin path=file:///…/opencode-plugin-orch loading plugin`
-- `service=opencode-plugin-orch [orch] ready · 11 tools`
+- `service=opencode-plugin-orch [orch] ready · 12 tools`
 - **Zero** `plugin has no server entrypoint` warnings.
 
 If you see `plugin has no server entrypoint`, `dist/` is either missing or stale — re-run `pnpm install && pnpm run build`.
 
 ## Using it
 
-Just talk to your lead model in natural language — the 11 `orch_*` tools are in its toolbelt. Some things to try:
+Just talk to your lead model in natural language — the 12 `orch_*` tools are in its toolbelt. Some things to try:
 
 > For a worked example, see [examples/feature-build-demo.md](examples/feature-build-demo.md).
 
@@ -152,7 +153,7 @@ The test suite is at `tests/`:
 - `core.test.ts` — pure logic (state machine, task board, file locks, store persistence)
 - `communication.test.ts` — bus, scratchpad, cost tracker, escalation, activity
 - `hooks-templates.test.ts` — permission hook (git safety), activity hook, templates
-- `tools.test.ts` — integration tests for all 11 `orch_*` tools
+- `tools.test.ts` — integration tests for all 12 `orch_*` tools
 - `events.test.ts` — event hook integration (session.idle, session.error, budget)
 - `e2e.test.ts` — true end-to-end against a real in-process opencode server via `createOpencode()`
 
