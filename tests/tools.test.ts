@@ -3,6 +3,8 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { createHarness, makeToolContext, type Harness } from "./_harness.js";
+import { createTools } from "../src/tools/index.js";
+import { RateLimiter } from "../src/core/rate-limit.js";
 
 // ─── orch_create ──────────────────────────────────────────────────────
 describe("orch_create", () => {
@@ -170,6 +172,75 @@ describe("orch_spawn", () => {
     const body = (calls[0].args as { body: { agent: string; model: { modelID: string } } }).body;
     expect(body.agent).toBe("plan");
     expect(body.model.modelID).toBe("claude-opus-4-6");
+  });
+
+  test("passes the default tool allowlist to session.promptAsync", async () => {
+    await h.tools.orch_spawn.execute(
+      { team: "t1", role: "coder2", instructions: "write code" },
+      makeToolContext("lead-session")
+    );
+
+    const calls = h.client.callsFor("session.promptAsync");
+    expect(calls).toHaveLength(1);
+    const body = (calls[0].args as { body: { tools: Record<string, boolean> } }).body;
+    expect(body.tools).toBeDefined();
+    // Baseline allows
+    expect(body.tools.read).toBe(true);
+    expect(body.tools.bash).toBe(true);
+    expect(body.tools.orch_message).toBe(true);
+    expect(body.tools.orch_tasks).toBe(true);
+    // Baseline denies
+    expect(body.tools.webfetch).toBe(false);
+    expect(body.tools.orch_create).toBe(false);
+    expect(body.tools.orch_spawn).toBe(false);
+    expect(body.tools.orch_shutdown).toBe(false);
+    expect(body.tools.orch_inbox).toBe(false);
+    expect(body.tools.orch_team).toBe(false);
+  });
+
+  test("toolsAllowed arg merges on top of defaults (true overrides default false)", async () => {
+    await h.tools.orch_spawn.execute(
+      {
+        team: "t1",
+        role: "browser",
+        instructions: "fetch stuff",
+        toolsAllowed: "bash, webfetch",
+      },
+      makeToolContext("lead-session")
+    );
+
+    const calls = h.client.callsFor("session.promptAsync");
+    expect(calls).toHaveLength(1);
+    const body = (calls[0].args as { body: { tools: Record<string, boolean> } }).body;
+    // bash was already true; remains true
+    expect(body.tools.bash).toBe(true);
+    // webfetch was false by default; user-provided flips to true
+    expect(body.tools.webfetch).toBe(true);
+    // Untouched defaults remain
+    expect(body.tools.orch_create).toBe(false);
+    expect(body.tools.read).toBe(true);
+  });
+
+  test("member's toolsAllowed is persisted to the store and visible on getMember", async () => {
+    await h.tools.orch_spawn.execute(
+      {
+        team: "t1",
+        role: "persistent",
+        instructions: "stick around",
+        toolsAllowed: "webfetch",
+      },
+      makeToolContext("lead-session")
+    );
+
+    const team = h.store.getTeamByName("t1")!;
+    const member = h.store.getMemberByRole(team.id, "persistent")!;
+    expect(member.toolsAllowed).toBeDefined();
+    expect(member.toolsAllowed!.read).toBe(true);
+    expect(member.toolsAllowed!.webfetch).toBe(true);
+    expect(member.toolsAllowed!.orch_create).toBe(false);
+
+    const fetched = h.manager.getMember(member.id)!;
+    expect(fetched.toolsAllowed).toEqual(member.toolsAllowed);
   });
 });
 
@@ -525,6 +596,119 @@ describe("orch_tasks", () => {
       makeToolContext("lead-session")
     );
     expect(result).toBe("No tasks found.");
+  });
+
+  test("unblock clears deps on an available task", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "upstream" },
+      makeToolContext("lead-session")
+    );
+    const [upstream] = h.store.listTasks(teamID);
+    await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add",
+        title: "downstream",
+        dependsOn: upstream.id,
+      },
+      makeToolContext("lead-session")
+    );
+    const downstream = h.store
+      .listTasks(teamID)
+      .find((t) => t.title === "downstream")!;
+    expect(downstream.dependsOn).toEqual([upstream.id]);
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "unblock", taskID: downstream.id },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('Unblocked task "downstream": cleared 1 dependency');
+    expect(h.store.getTask(downstream.id)?.dependsOn).toEqual([]);
+  });
+
+  test("unblock on a task with no deps still succeeds", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "lonely" },
+      makeToolContext("lead-session")
+    );
+    const [lonely] = h.store.listTasks(teamID);
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "unblock", taskID: lonely.id },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('Unblocked task "lonely": cleared 0 dependencies');
+  });
+
+  test("unblock on a non-available task errors", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "claimed-task" },
+      makeToolContext("lead-session")
+    );
+    const [task] = h.store.listTasks(teamID);
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "claim", taskID: task.id },
+      makeToolContext(memberSessionID)
+    );
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "unblock", taskID: task.id },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe(
+      'Error: Task "claimed-task" is claimed, only available tasks can be unblocked'
+    );
+  });
+
+  test("unblock on a non-existent task errors", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "unblock", taskID: "task_missing_xyz" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Error: Task task_missing_xyz not found");
+  });
+
+  test("after unblock, a previously-blocked task becomes claimable", async () => {
+    // Create upstream, claim it, fail it (so it can never unblock dependent normally)
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "stuck-upstream" },
+      makeToolContext("lead-session")
+    );
+    const [upstream] = h.store.listTasks(teamID);
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "claim", taskID: upstream.id },
+      makeToolContext(memberSessionID)
+    );
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "fail", taskID: upstream.id, result: "dead" },
+      makeToolContext(memberSessionID)
+    );
+
+    await h.tools.orch_tasks.execute(
+      {
+        team: "tt",
+        action: "add",
+        title: "rescued",
+        dependsOn: upstream.id,
+      },
+      makeToolContext("lead-session")
+    );
+    const rescued = h.store
+      .listTasks(teamID)
+      .find((t) => t.title === "rescued")!;
+
+    // Before unblock: claim should fail because upstream is failed, not completed
+    expect(() => h.board.claim(rescued.id, memberID)).toThrow(/unmet dependencies/);
+
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "unblock", taskID: rescued.id },
+      makeToolContext("lead-session")
+    );
+
+    // After unblock: claim passes (TaskBoard.claim doesn't throw)
+    const claimed = h.board.claim(rescued.id, memberID);
+    expect(claimed.status).toBe("claimed");
+    expect(claimed.assignee).toBe(memberID);
   });
 });
 
@@ -998,6 +1182,58 @@ describe("orch_result", () => {
     expect(parsed.results[0].assignee).toBe("worker");
     expect(parsed.failures[0].title).toBe("broken-one");
   });
+
+  test("json format matches the documented schema exactly", async () => {
+    const result = await h.tools.orch_result.execute(
+      { team: "rt", format: "json" },
+      makeToolContext("lead-session")
+    );
+    const parsed = JSON.parse(result);
+
+    // Top-level keys match the documented shape
+    expect(Object.keys(parsed).sort()).toEqual(
+      ["failures", "results", "tasks", "team", "totalCost"].sort()
+    );
+    expect(typeof parsed.team).toBe("string");
+    expect(typeof parsed.totalCost).toBe("number");
+
+    // tasks breakdown shape
+    expect(Object.keys(parsed.tasks).sort()).toEqual(
+      ["completed", "failed", "pending", "total"].sort()
+    );
+    for (const k of ["total", "completed", "failed", "pending"] as const) {
+      expect(typeof parsed.tasks[k]).toBe("number");
+    }
+
+    // results entries have {id, title, result, assignee}
+    expect(Array.isArray(parsed.results)).toBe(true);
+    expect(parsed.results.length).toBeGreaterThan(0);
+    for (const r of parsed.results) {
+      expect(Object.keys(r).sort()).toEqual(
+        ["assignee", "id", "result", "title"].sort()
+      );
+      expect(typeof r.id).toBe("string");
+      expect(typeof r.title).toBe("string");
+    }
+
+    // failures entries have {id, title, reason}
+    expect(Array.isArray(parsed.failures)).toBe(true);
+    expect(parsed.failures.length).toBeGreaterThan(0);
+    for (const f of parsed.failures) {
+      expect(Object.keys(f).sort()).toEqual(["id", "reason", "title"].sort());
+      expect(typeof f.id).toBe("string");
+      expect(typeof f.title).toBe("string");
+      expect(typeof f.reason).toBe("string");
+    }
+  });
+
+  test("tool description documents the JSON shape", () => {
+    const desc = String(h.tools.orch_result.description ?? "");
+    expect(desc).toContain("JSON shape");
+    expect(desc).toContain("totalCost");
+    expect(desc).toContain("results");
+    expect(desc).toContain("failures");
+  });
 });
 
 // ─── error-string contract ───────────────────────────────────────────
@@ -1454,5 +1690,103 @@ describe("orch_team", () => {
     const tasks = h.store.listTasks(team.id);
     expect(tasks.length).toBe(1);
     expect(tasks[0].title).toBe("historical work");
+  });
+});
+
+// ─── rate limiting ────────────────────────────────────────────────────
+describe("orch_* rate limiting", () => {
+  let h: Harness;
+  // Rebuild the tools with a tight limiter so we can exercise the limit
+  // without spamming thousands of calls.
+  let tools: ReturnType<typeof createTools>;
+  let limiter: RateLimiter;
+
+  beforeEach(async () => {
+    h = await createHarness();
+    limiter = new RateLimiter({ windowMs: 60_000, maxCalls: 3 });
+    tools = createTools({
+      manager: h.manager,
+      bus: h.bus,
+      board: h.board,
+      pad: h.pad,
+      costs: h.costs,
+      activity: h.activity,
+      store: h.store,
+      templates: h.templates,
+      rateLimiter: limiter,
+    });
+    // Large backpressure so we trip the rate limit, not the message queue.
+    h.manager.createTeam("rl-team", "lead-session", { backpressureLimit: 1000 });
+    await h.tools.orch_spawn.execute(
+      { team: "rl-team", role: "worker", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+  });
+  afterEach(() => { h.cleanup(); });
+
+  test("member hitting the cap gets a rate-limit error on the next call", async () => {
+    const team = h.store.getTeamByName("rl-team")!;
+    const worker = h.store.getMemberByRole(team.id, "worker")!;
+    const ctx = makeToolContext(worker.sessionID);
+
+    for (let i = 0; i < 3; i++) {
+      const ok = await tools.orch_message.execute(
+        { team: "rl-team", to: "lead", content: `ping ${i}` },
+        ctx
+      );
+      expect(ok).not.toContain("rate limit");
+    }
+    const blocked = await tools.orch_message.execute(
+      { team: "rl-team", to: "lead", content: "one too many" },
+      ctx
+    );
+    expect(blocked).toContain("rate limit exceeded");
+    expect(blocked).toContain("Retry in");
+  });
+
+  test("lead session is never rate-limited", async () => {
+    const ctx = makeToolContext("lead-session");
+    // Ten calls, well past the 3-call cap
+    for (let i = 0; i < 10; i++) {
+      const r = await tools.orch_message.execute(
+        { team: "rl-team", to: "worker", content: `msg ${i}` },
+        ctx
+      );
+      expect(r).not.toContain("rate limit");
+    }
+  });
+
+  test("after the window elapses, the member is allowed again", async () => {
+    const team = h.store.getTeamByName("rl-team")!;
+    const worker = h.store.getMemberByRole(team.id, "worker")!;
+    const ctx = makeToolContext(worker.sessionID);
+    // Use a tight window to keep the test fast.
+    limiter = new RateLimiter({ windowMs: 60, maxCalls: 2 });
+    tools = createTools({
+      manager: h.manager,
+      bus: h.bus,
+      board: h.board,
+      pad: h.pad,
+      costs: h.costs,
+      activity: h.activity,
+      store: h.store,
+      templates: h.templates,
+      rateLimiter: limiter,
+    });
+
+    await tools.orch_message.execute({ team: "rl-team", to: "lead", content: "1" }, ctx);
+    await tools.orch_message.execute({ team: "rl-team", to: "lead", content: "2" }, ctx);
+    const blocked = await tools.orch_message.execute(
+      { team: "rl-team", to: "lead", content: "3" },
+      ctx
+    );
+    expect(blocked).toContain("rate limit exceeded");
+
+    await new Promise((r) => setTimeout(r, 80));
+    const unblocked = await tools.orch_message.execute(
+      { team: "rl-team", to: "lead", content: "4" },
+      ctx
+    );
+    expect(unblocked).not.toContain("rate limit");
   });
 });

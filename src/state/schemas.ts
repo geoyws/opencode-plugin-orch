@@ -73,6 +73,11 @@ export const Member = z.object({
   escalationLevel: z.number().int().default(0),
   retryCount: z.number().int().default(0),
   createdAt: z.number(),
+  // Per-member tool allowlist passed to session.promptAsync as `body.tools`.
+  // undefined = no restriction (backwards-compat for members stored before
+  // this field existed). Populated by spawnMember from DEFAULT_MEMBER_TOOLS
+  // merged with the optional toolsAllowed arg.
+  toolsAllowed: z.record(z.string(), z.boolean()).optional(),
 });
 export type Member = z.infer<typeof Member>;
 

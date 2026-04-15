@@ -92,6 +92,22 @@ export class TaskBoard {
     return updated;
   }
 
+  unblock(taskID: string): { task: Task; cleared: number } {
+    const task = this.store.getTask(taskID);
+    if (!task) throw new Error(`Task ${taskID} not found`);
+    if (task.status !== "available") {
+      throw new Error(
+        `Task "${task.title}" is ${task.status}, only available tasks can be unblocked`
+      );
+    }
+    const cleared = task.dependsOn.length;
+    const updated: Task = { ...task, dependsOn: [], version: task.version + 1 };
+    if (!this.store.compareAndUpdateTask(task.id, task.version, updated)) {
+      throw new Error(`Task "${task.title}" was modified concurrently`);
+    }
+    return { task: updated, cleared };
+  }
+
   fail(taskID: string, reason: string): Task {
     const task = this.store.getTask(taskID);
     if (!task) throw new Error(`Task ${taskID} not found`);

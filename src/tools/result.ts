@@ -3,17 +3,24 @@ import type { TeamManager } from "../core/team-manager.js";
 import type { TaskBoard } from "../core/task-board.js";
 import type { CostTracker } from "../core/cost-tracker.js";
 import type { Store } from "../state/store.js";
+import type { RateLimiter } from "../core/rate-limit.js";
+import { checkRate } from "./_rate.js";
 
 export function createResultTool(
   manager: TeamManager,
   board: TaskBoard,
   costs: CostTracker,
-  store: Store
+  store: Store,
+  rateLimiter: RateLimiter
 ): ToolDefinition {
   return tool({
     description:
-      "Aggregate and display results from completed tasks. " +
-      "Formats: summary (default), detailed, json.",
+      "Aggregate completed-task results from a team. Formats: summary (default, markdown one-line per task), " +
+      "detailed (markdown with full task results), json (machine-readable). " +
+      "JSON shape: { team: string, totalCost: number, " +
+      "tasks: {total, completed, failed, pending}, " +
+      "results: Array<{id, title, result, assignee}>, " +
+      "failures: Array<{id, title, reason}> }.",
     args: {
       team: tool.schema.string().describe("Team name"),
       format: tool.schema
@@ -21,8 +28,10 @@ export function createResultTool(
         .optional()
         .describe("Output format (default: summary)"),
     },
-    async execute(args) {
+    async execute(args, context) {
       try {
+      const rateErr = checkRate(rateLimiter, context, manager);
+      if (rateErr) return rateErr;
       const team = manager.requireTeam(args.team);
       const tasks = board.listTasks(team.id);
       const completed = tasks.filter((t) => t.status === "completed");

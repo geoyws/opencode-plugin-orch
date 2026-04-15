@@ -1,8 +1,14 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { Scratchpad } from "../core/scratchpad.js";
+import type { RateLimiter } from "../core/rate-limit.js";
+import { checkRate } from "./_rate.js";
 
-export function createMemoTool(manager: TeamManager, pad: Scratchpad): ToolDefinition {
+export function createMemoTool(
+  manager: TeamManager,
+  pad: Scratchpad,
+  rateLimiter: RateLimiter
+): ToolDefinition {
   return tool({
     description:
       "Shared team scratchpad — store and retrieve findings so teammates " +
@@ -25,8 +31,10 @@ export function createMemoTool(manager: TeamManager, pad: Scratchpad): ToolDefin
           "Scope filter for list (e.g. 'auth' or 'auth:'). Returns only keys with the given scope prefix."
         ),
     },
-    async execute(args) {
+    async execute(args, context) {
       try {
+      const rateErr = checkRate(rateLimiter, context, manager);
+      if (rateErr) return rateErr;
       const team = manager.requireTeam(args.team);
 
       switch (args.action) {

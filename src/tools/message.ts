@@ -1,10 +1,13 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { MessageBus } from "../core/message-bus.js";
+import type { RateLimiter } from "../core/rate-limit.js";
+import { checkRate } from "./_rate.js";
 
 export function createMessageTool(
   manager: TeamManager,
-  bus: MessageBus
+  bus: MessageBus,
+  rateLimiter: RateLimiter
 ): ToolDefinition {
   return tool({
     description:
@@ -18,6 +21,8 @@ export function createMessageTool(
     },
     async execute(args, context) {
       try {
+        const rateErr = checkRate(rateLimiter, context, manager);
+        if (rateErr) return rateErr;
         const team = manager.requireTeam(args.team);
         const senderMember = manager.getMemberBySession(context.sessionID);
         const fromRole = senderMember?.role ?? "lead";

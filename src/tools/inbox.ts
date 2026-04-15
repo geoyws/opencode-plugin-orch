@@ -1,6 +1,8 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { Store } from "../state/store.js";
+import type { RateLimiter } from "../core/rate-limit.js";
+import { checkRate } from "./_rate.js";
 
 function formatAge(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -14,7 +16,8 @@ function formatAge(ms: number): string {
 
 export function createInboxTool(
   manager: TeamManager,
-  store: Store
+  store: Store,
+  rateLimiter: RateLimiter
 ): ToolDefinition {
   return tool({
     description:
@@ -36,8 +39,10 @@ export function createInboxTool(
         .optional()
         .describe("For list: max messages to return (default 20, max 100)"),
     },
-    async execute(args) {
+    async execute(args, context) {
       try {
+        const rateErr = checkRate(rateLimiter, context, manager);
+        if (rateErr) return rateErr;
         const team = manager.requireTeam(args.team);
         // Teams persisted before this field existed may deserialize without
         // it; store bypasses Zod on load, so we tolerate undefined here.

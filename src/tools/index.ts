@@ -7,6 +7,7 @@ import type { CostTracker } from "../core/cost-tracker.js";
 import type { ActivityTracker } from "../core/activity.js";
 import type { Store } from "../state/store.js";
 import type { TemplateRegistry } from "../templates/index.js";
+import type { RateLimiter } from "../core/rate-limit.js";
 import { createCreateTool } from "./create.js";
 import { createSpawnTool } from "./spawn.js";
 import { createMessageTool } from "./message.js";
@@ -28,20 +29,21 @@ export interface ToolDeps {
   activity: ActivityTracker;
   store: Store;
   templates: TemplateRegistry;
+  rateLimiter: RateLimiter;
 }
 
 export function createTools(deps: ToolDeps): Record<string, ToolDefinition> {
   return {
     orch_create: createCreateTool(deps.manager, deps.templates),
     orch_spawn: createSpawnTool(deps.manager),
-    orch_message: createMessageTool(deps.manager, deps.bus),
-    orch_broadcast: createBroadcastTool(deps.manager, deps.bus),
-    orch_tasks: createTasksTool(deps.manager, deps.board, deps.store),
-    orch_memo: createMemoTool(deps.manager, deps.pad),
-    orch_status: createStatusTool(deps.manager, deps.costs, deps.activity, deps.board, deps.store),
+    orch_message: createMessageTool(deps.manager, deps.bus, deps.rateLimiter),
+    orch_broadcast: createBroadcastTool(deps.manager, deps.bus, deps.rateLimiter),
+    orch_tasks: createTasksTool(deps.manager, deps.board, deps.store, deps.rateLimiter),
+    orch_memo: createMemoTool(deps.manager, deps.pad, deps.rateLimiter),
+    orch_status: createStatusTool(deps.manager, deps.costs, deps.activity, deps.board, deps.store, deps.rateLimiter),
     orch_shutdown: createShutdownTool(deps.manager),
-    orch_result: createResultTool(deps.manager, deps.board, deps.costs, deps.store),
-    orch_inbox: createInboxTool(deps.manager, deps.store),
-    orch_team: createTeamTool(deps.manager, deps.store),
+    orch_result: createResultTool(deps.manager, deps.board, deps.costs, deps.store, deps.rateLimiter),
+    orch_inbox: createInboxTool(deps.manager, deps.store, deps.rateLimiter),
+    orch_team: createTeamTool(deps.manager, deps.store, deps.rateLimiter),
   };
 }

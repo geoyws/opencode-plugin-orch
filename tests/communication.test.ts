@@ -50,6 +50,7 @@ function seedMember(overrides: Partial<Member> = {}): Member {
     createdAt: overrides.createdAt ?? Date.now(),
     agent: overrides.agent,
     model: overrides.model,
+    toolsAllowed: overrides.toolsAllowed,
   };
   store.createMember(member);
   return member;
@@ -753,6 +754,88 @@ describe("MessageBus", () => {
     // Mark delivered
     store.markDelivered(msgID);
     expect(store.getUndeliveredMessages("m_r").length).toBe(0);
+  });
+
+  test("deliverMessages includes the member's toolsAllowed in promptAsync body", async () => {
+    // Capture promptAsync bodies on this test's mockCtx
+    const promptCalls: Array<{ path: unknown; body: unknown }> = [];
+    mockCtx.client.session.promptAsync = async (params: {
+      path: unknown;
+      body: unknown;
+    }) => {
+      promptCalls.push(params);
+      return { data: {} };
+    };
+
+    const team = seedTeam();
+    seedMember({ id: "m_s", role: "sender", state: "busy" });
+    // Receiver must be "ready" for deliverMessages to actually send.
+    // Attach a restricted toolsAllowed record.
+    const toolsAllowed: Record<string, boolean> = {
+      read: true,
+      bash: true,
+      webfetch: false,
+      orch_create: false,
+    };
+    seedMember({
+      id: "m_r",
+      role: "receiver",
+      state: "ready",
+      toolsAllowed,
+    });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    // Send directly to the store so send()'s auto-wake doesn't fire first
+    store.addMessage({
+      id: "msg_x",
+      teamID: team.id,
+      from: "m_s",
+      to: "m_r",
+      content: "wake up",
+      delivered: false,
+      createdAt: Date.now(),
+    });
+
+    const delivered = await bus.deliverMessages("m_r");
+    expect(delivered).toBe(1);
+
+    expect(promptCalls.length).toBe(1);
+    const body = promptCalls[0].body as {
+      parts: unknown[];
+      tools?: Record<string, boolean>;
+    };
+    expect(body.tools).toBeDefined();
+    expect(body.tools).toEqual(toolsAllowed);
+  });
+
+  test("deliverMessages omits body.tools when member has no toolsAllowed", async () => {
+    const promptCalls: Array<{ body: { tools?: unknown } }> = [];
+    mockCtx.client.session.promptAsync = async (params: {
+      body: { tools?: unknown };
+    }) => {
+      promptCalls.push(params);
+      return { data: {} };
+    };
+
+    const team = seedTeam();
+    seedMember({ id: "m_s2", role: "sender2", state: "busy" });
+    // No toolsAllowed — pre-existing member shape
+    seedMember({ id: "m_r2", role: "receiver2", state: "ready" });
+
+    const bus = new MessageBus(store, mockManager, mockCtx);
+    store.addMessage({
+      id: "msg_y",
+      teamID: team.id,
+      from: "m_s2",
+      to: "m_r2",
+      content: "no tools",
+      delivered: false,
+      createdAt: Date.now(),
+    });
+
+    await bus.deliverMessages("m_r2");
+    expect(promptCalls.length).toBe(1);
+    expect(promptCalls[0].body.tools).toBeUndefined();
   });
 });
 

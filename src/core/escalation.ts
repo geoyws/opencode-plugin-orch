@@ -68,16 +68,19 @@ export class EscalationManager {
       const updated: Member = { ...member, sessionID };
       this.store.updateMember(updated);
 
-      // Re-send instructions
+      // Re-send instructions, preserving the member's tool allowlist so the
+      // escalated session has the same restrictions as the original.
       const body: {
         parts: Array<{ type: "text"; text: string }>;
         agent?: string;
         model?: { providerID: string; modelID: string };
+        tools?: Record<string, boolean>;
       } = {
         parts: [{ type: "text", text: member.instructions }],
       };
       if (member.agent) body.agent = member.agent;
       if (member.model) body.model = member.model;
+      if (member.toolsAllowed) body.tools = member.toolsAllowed;
 
       await this.ctx.client.session.promptAsync({
         path: { id: sessionID },

@@ -8,6 +8,31 @@ export function genID(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${(++idCounter).toString(36)}`;
 }
 
+// Default tool allowlist for spawned members. Passed as `body.tools` to
+// session.promptAsync so members only see the tools we want them to use.
+// orch_create / orch_spawn are denied to prevent recursive team creation;
+// orch_inbox / orch_team / orch_shutdown are lead-only; webfetch is opt-in.
+export const DEFAULT_MEMBER_TOOLS: Record<string, boolean> = {
+  read: true,
+  write: true,
+  edit: true,
+  glob: true,
+  grep: true,
+  bash: true,
+  webfetch: false,
+  orch_message: true,
+  orch_broadcast: true,
+  orch_tasks: true,
+  orch_memo: true,
+  orch_status: true,
+  orch_result: true,
+  orch_inbox: false,
+  orch_team: false,
+  orch_create: false,
+  orch_spawn: false,
+  orch_shutdown: false,
+};
+
 export class TeamManager {
   constructor(
     private store: Store,
@@ -57,6 +82,7 @@ export class TeamManager {
     agent?: string;
     model?: { providerID: string; modelID: string };
     files?: string[];
+    toolsAllowed?: string[];
   }): Promise<Member> {
     const team = this.store.getTeam(opts.teamID);
     if (!team) throw new Error(`Team ${opts.teamID} not found`);
@@ -75,6 +101,16 @@ export class TeamManager {
     });
     const sessionID = (session.data as { id: string }).id;
 
+    // Compute the tool allowlist: hardcoded defaults + user-provided extras.
+    // User-provided names always get `true` — they're additive, not restrictive.
+    const toolsAllowed: Record<string, boolean> = { ...DEFAULT_MEMBER_TOOLS };
+    if (opts.toolsAllowed) {
+      for (const name of opts.toolsAllowed) {
+        const trimmed = name.trim();
+        if (trimmed) toolsAllowed[trimmed] = true;
+      }
+    }
+
     const member: Member = {
       id: genID("member"),
       teamID: opts.teamID,
@@ -88,6 +124,7 @@ export class TeamManager {
       escalationLevel: 0,
       retryCount: 0,
       createdAt: Date.now(),
+      toolsAllowed,
     };
     this.store.createMember(member);
 
@@ -141,16 +178,23 @@ export class TeamManager {
       "- When you complete your assigned work, use orch_tasks to mark it complete with results",
     ].join("\n");
 
-    // Send initial instructions (non-blocking)
+    // Send initial instructions (non-blocking). Pass the tool allowlist as
+    // `body.tools` so the child session only sees the tools we want.
     const body: Record<string, unknown> = {
       parts: [{ type: "text", text: contextPrompt }],
+      tools: toolsAllowed,
     };
     if (opts.agent) body.agent = opts.agent;
     if (opts.model) body.model = opts.model;
 
     await this.ctx.client.session.promptAsync({
       path: { id: sessionID },
-      body: body as { parts: Array<{ type: "text"; text: string }>; agent?: string; model?: { providerID: string; modelID: string } },
+      body: body as {
+        parts: Array<{ type: "text"; text: string }>;
+        agent?: string;
+        model?: { providerID: string; modelID: string };
+        tools?: Record<string, boolean>;
+      },
     });
 
     return member;

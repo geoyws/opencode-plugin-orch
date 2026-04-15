@@ -133,9 +133,15 @@ export class MessageBus {
     });
 
     try {
+      const body: {
+        parts: Array<{ type: "text"; text: string }>;
+        tools?: Record<string, boolean>;
+      } = { parts };
+      if (member.toolsAllowed) body.tools = member.toolsAllowed;
+
       await this.ctx.client.session.promptAsync({
         path: { id: member.sessionID },
-        body: { parts },
+        body,
       });
 
       // Mark all as delivered

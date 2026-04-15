@@ -1,10 +1,13 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { Store } from "../state/store.js";
+import type { RateLimiter } from "../core/rate-limit.js";
+import { checkRate } from "./_rate.js";
 
 export function createTeamTool(
   manager: TeamManager,
-  store: Store
+  store: Store,
+  rateLimiter: RateLimiter
 ): ToolDefinition {
   return tool({
     description:
@@ -21,8 +24,10 @@ export function createTeamTool(
         .optional()
         .describe("Team name (required for info action)"),
     },
-    async execute(args) {
+    async execute(args, context) {
       try {
+        const rateErr = checkRate(rateLimiter, context, manager);
+        if (rateErr) return rateErr;
         switch (args.action) {
           case "list": {
             const teams = store.listTeams();

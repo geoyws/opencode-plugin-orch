@@ -29,6 +29,16 @@ export function createSpawnTool(manager: TeamManager): ToolDefinition {
         .string()
         .optional()
         .describe("Comma-separated file paths to pre-load into context"),
+      toolsAllowed: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Comma-separated tool IDs to allow for this member on top of the " +
+            "default allowlist (read/write/edit/glob/grep/bash + orch peer tools). " +
+            "Names listed here are set to true, overriding any default deny — " +
+            "e.g. `toolsAllowed='webfetch'` opts the member into webfetch, which " +
+            "is denied by default."
+        ),
     },
     async execute(args) {
       try {
@@ -43,6 +53,10 @@ export function createSpawnTool(manager: TeamManager): ToolDefinition {
           ? args.files.split(",").map((f) => f.trim()).filter(Boolean)
           : undefined;
 
+        const toolsAllowed = args.toolsAllowed
+          ? args.toolsAllowed.split(",").map((t) => t.trim()).filter(Boolean)
+          : undefined;
+
         const member = await manager.spawnMember({
           teamID: team.id,
           role: args.role,
@@ -50,6 +64,7 @@ export function createSpawnTool(manager: TeamManager): ToolDefinition {
           agent: args.agent,
           model,
           files,
+          toolsAllowed,
         });
 
         let output = `Spawned member "${member.role}" (id: ${member.id}, session: ${member.sessionID})`;

@@ -15,6 +15,7 @@ import { createPermissionHook } from "./hooks/permissions.js";
 import { createActivityHook } from "./hooks/activity-tracker.js";
 import { Reporter } from "./core/reporter.js";
 import { revalidateMemberSessions } from "./core/revalidate.js";
+import { RateLimiter } from "./core/rate-limit.js";
 
 const INIT_TIMEOUT_MS = 5000;
 
@@ -73,6 +74,11 @@ async function doInit(
   const escalation = new EscalationManager(store, manager, input);
   const activity = new ActivityTracker();
 
+  // ── Rate limiter ────────────────────────────────────────────────
+  // Caps each member at 60 orch_* tool calls per 60-second sliding window.
+  // Lead is exempt (checkRate returns null for non-member sessions).
+  const rateLimiter = new RateLimiter({ windowMs: 60_000, maxCalls: 60 });
+
   // ── Session revalidation ────────────────────────────────────────
   // Members recovered from snapshot/JSONL may reference opencode sessions
   // that no longer exist. Walk them now and force-shutdown the dead ones
@@ -94,6 +100,7 @@ async function doInit(
       activity,
       store,
       templates,
+      rateLimiter,
     }),
 
     event: createEventHook({

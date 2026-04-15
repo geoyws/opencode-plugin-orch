@@ -2,18 +2,26 @@ import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { TeamManager } from "../core/team-manager.js";
 import type { TaskBoard } from "../core/task-board.js";
 import type { Store } from "../state/store.js";
+import type { RateLimiter } from "../core/rate-limit.js";
+import { checkRate } from "./_rate.js";
 
-export function createTasksTool(manager: TeamManager, board: TaskBoard, store: Store): ToolDefinition {
+export function createTasksTool(
+  manager: TeamManager,
+  board: TaskBoard,
+  store: Store,
+  rateLimiter: RateLimiter
+): ToolDefinition {
   return tool({
     description:
       "Manage the team task board. Actions: list (view tasks, optionally filtered by status), " +
       "add (create a task with optional dependencies and tags), claim (take an available task — only team members can claim), " +
-      "complete (mark done with result text), fail (mark failed with reason). " +
+      "complete (mark done with result text), fail (mark failed with reason), " +
+      "unblock (clear all dependencies on an available task — escape hatch when an upstream dep is stuck). " +
       "Tasks with unmet dependencies cannot be claimed. Completed tasks auto-unblock dependents.",
     args: {
       team: tool.schema.string().describe("Team name"),
       action: tool.schema
-        .enum(["list", "add", "claim", "complete", "fail"])
+        .enum(["list", "add", "claim", "complete", "fail", "unblock"])
         .describe("Action to perform"),
       title: tool.schema.string().optional().describe("Task title (for add)"),
       description: tool.schema.string().optional().describe("Task description (for add)"),
@@ -40,6 +48,8 @@ export function createTasksTool(manager: TeamManager, board: TaskBoard, store: S
     },
     async execute(args, context) {
       try {
+      const rateErr = checkRate(rateLimiter, context, manager);
+      if (rateErr) return rateErr;
       const team = manager.requireTeam(args.team);
 
       switch (args.action) {
@@ -115,6 +125,14 @@ export function createTasksTool(manager: TeamManager, board: TaskBoard, store: S
           if (!args.taskID) return "Error: taskID is required for fail";
           const task = board.fail(args.taskID, args.result ?? "Unknown failure");
           return `Failed task "${task.title}"`;
+        }
+
+        case "unblock": {
+          if (!args.taskID) return "Error: taskID is required for unblock";
+          const { task, cleared } = board.unblock(args.taskID);
+          return `Unblocked task "${task.title}": cleared ${cleared} ${
+            cleared === 1 ? "dependency" : "dependencies"
+          }`;
         }
 
         default:

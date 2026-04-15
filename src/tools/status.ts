@@ -4,7 +4,9 @@ import type { CostTracker } from "../core/cost-tracker.js";
 import type { ActivityTracker } from "../core/activity.js";
 import type { TaskBoard } from "../core/task-board.js";
 import type { Store } from "../state/store.js";
+import type { RateLimiter } from "../core/rate-limit.js";
 import { stateIcon } from "../core/member.js";
+import { checkRate } from "./_rate.js";
 
 function formatAge(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -21,7 +23,8 @@ export function createStatusTool(
   costs: CostTracker,
   activity: ActivityTracker,
   board: TaskBoard,
-  store: Store
+  store: Store,
+  rateLimiter: RateLimiter
 ): ToolDefinition {
   return tool({
     description:
@@ -34,8 +37,10 @@ export function createStatusTool(
         .optional()
         .describe("Show detailed task list (default: false)"),
     },
-    async execute(args) {
+    async execute(args, context) {
       try {
+      const rateErr = checkRate(rateLimiter, context, manager);
+      if (rateErr) return rateErr;
       const team = manager.requireTeam(args.team);
       const members = manager.listMembers(team.id);
       const tasks = board.listTasks(team.id);

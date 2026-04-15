@@ -76,22 +76,27 @@ export function createEventHook(deps: EventDeps) {
           const stolen = board.stealTask(team.id, member.id, member.role);
           if (stolen) {
             try {
+              const stealBody: {
+                parts: Array<{ type: "text"; text: string }>;
+                tools?: Record<string, boolean>;
+              } = {
+                parts: [
+                  {
+                    type: "text",
+                    text: [
+                      `[Work stolen] You've been assigned task "${stolen.title}":`,
+                      stolen.description,
+                      "",
+                      `Task ID: ${stolen.id}`,
+                      "When done, use orch_tasks to complete it with your results.",
+                    ].join("\n"),
+                  },
+                ],
+              };
+              if (member.toolsAllowed) stealBody.tools = member.toolsAllowed;
               await ctx.client.session.promptAsync({
                 path: { id: member.sessionID },
-                body: {
-                  parts: [
-                    {
-                      type: "text",
-                      text: [
-                        `[Work stolen] You've been assigned task "${stolen.title}":`,
-                        stolen.description,
-                        "",
-                        `Task ID: ${stolen.id}`,
-                        "When done, use orch_tasks to complete it with your results.",
-                      ].join("\n"),
-                    },
-                  ],
-                },
+                body: stealBody,
               });
               await ctx.client.tui.showToast({
                 body: {
