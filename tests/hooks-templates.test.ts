@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { createPermissionHook } from "../src/hooks/permissions.js";
-import { createActivityHook } from "../src/hooks/activity-tracker.js";
+import { createActivityHook, createActivityBeforeHook } from "../src/hooks/activity-tracker.js";
 import { TemplateRegistry } from "../src/templates/index.js";
 import type { Member } from "../src/state/schemas.js";
 
@@ -1182,6 +1182,31 @@ describe("createActivityHook", () => {
     );
 
     expect(touchedWith).toBe("member-1");
+  });
+
+  test("before hook calls touchMember for member session and skips non-member", async () => {
+    const touchCalls: string[] = [];
+
+    const mockManager = {
+      getMemberBySession: (id: string) =>
+        id === "member-session-1" ? fakeMember : undefined,
+      touchMember: (memberID: string) => {
+        touchCalls.push(memberID);
+      },
+    } as any;
+
+    const beforeHook = createActivityBeforeHook(mockManager, "/tmp");
+
+    await beforeHook(
+      { tool: "bash", sessionID: "member-session-1", callID: "b1" },
+      {}
+    );
+    await beforeHook(
+      { tool: "bash", sessionID: "external", callID: "b2" },
+      {}
+    );
+
+    expect(touchCalls).toEqual(["member-1"]);
   });
 
   test("does NOT call touchMember for non-member session", async () => {

@@ -3,17 +3,33 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-// Default opencode log directory on Linux / macOS. Exported so tests and
-// tooling can reference the lookup order without re-deriving it.
-export function defaultFindLogDir(): string | undefined {
-  const candidates = [
-    path.join(os.homedir(), ".local/share/opencode/log"),
-    path.join(os.homedir(), "Library/Application Support/opencode/log"),
-  ];
+// Resolve opencode's log directory given an explicit homedir + platform.
+// Split from defaultFindLogDir so tests can drive it against a tmp home
+// without monkey-patching the `os` module. Checks the platform-native
+// path first so a dotfiles setup with both trees present (e.g. a Mac
+// mirroring an XDG-style Linux layout) still picks the one opencode
+// actually writes to.
+export function resolveLogDir(
+  homedir: string,
+  platform: NodeJS.Platform
+): string | undefined {
+  const linuxPath = path.join(homedir, ".local/share/opencode/log");
+  const macPath = path.join(
+    homedir,
+    "Library/Application Support/opencode/log"
+  );
+  const candidates =
+    platform === "darwin" ? [macPath, linuxPath] : [linuxPath, macPath];
   for (const dir of candidates) {
     if (fs.existsSync(dir)) return dir;
   }
   return undefined;
+}
+
+// Default opencode log directory on Linux / macOS. Thin wrapper around
+// resolveLogDir that injects the current process's homedir + platform.
+export function defaultFindLogDir(): string | undefined {
+  return resolveLogDir(os.homedir(), os.platform());
 }
 
 export interface LogToolOptions {
@@ -47,12 +63,30 @@ export function createLogTool(opts: LogToolOptions = {}): ToolDefinition {
           return "Error: could not locate opencode log directory (tried ~/.local/share/opencode/log and ~/Library/Application Support/opencode/log)";
         }
 
-        let files: string[];
+        // Pick the most recently modified .log file by mtime, not
+        // lexical name. opencode's own log files are ISO-timestamp
+        // named so lexical sort used to work, but a sibling file like
+        // `latest.log` or `archive.log` would beat a digit-prefixed
+        // timestamp name (letters > digits in ASCII). mtime is robust
+        // to whatever naming convention opencode lands on.
+        let files: Array<{ name: string; fullPath: string; mtime: number }>;
         try {
           files = fs
             .readdirSync(logDir)
             .filter((f) => f.endsWith(".log"))
-            .sort();
+            .map((name) => {
+              const fullPath = path.join(logDir, name);
+              try {
+                return { name, fullPath, mtime: fs.statSync(fullPath).mtimeMs };
+              } catch {
+                return null;
+              }
+            })
+            .filter(
+              (x): x is { name: string; fullPath: string; mtime: number } =>
+                x !== null
+            )
+            .sort((a, b) => b.mtime - a.mtime);
         } catch (err) {
           return `Error reading log directory ${logDir}: ${
             err instanceof Error ? err.message : String(err)
@@ -60,10 +94,8 @@ export function createLogTool(opts: LogToolOptions = {}): ToolDefinition {
         }
         if (files.length === 0) return `No log files found in ${logDir}`;
 
-        // Most recent log file. Names are timestamped (e.g.
-        // 2026-04-15T093000.log) so lexical sort = chronological sort.
-        const latest = path.join(logDir, files[files.length - 1]);
-        const content = fs.readFileSync(latest, "utf-8");
+        const latest = files[0];
+        const content = fs.readFileSync(latest.fullPath, "utf-8");
         const allLines = content.split("\n");
 
         // Match the two prefixes the plugin uses: [orch] for the
@@ -80,20 +112,20 @@ export function createLogTool(opts: LogToolOptions = {}): ToolDefinition {
             const n = Math.min(Math.max(args.lines ?? 20, 1), 200);
             const last = pluginLines.slice(-n);
             return last.length === 0
-              ? `No plugin lines in ${path.basename(latest)}`
-              : `Last ${last.length} plugin line(s) from ${path.basename(latest)}:\n${last.join("\n")}`;
+              ? `No plugin lines in ${latest.name}`
+              : `Last ${last.length} plugin line(s) from ${latest.name}:\n${last.join("\n")}`;
           }
           case "errors": {
             const errors = pluginLines.filter((l) => l.includes("ERROR"));
             return errors.length === 0
-              ? `No plugin errors in ${path.basename(latest)}`
-              : `${errors.length} plugin error line(s) in ${path.basename(latest)}:\n${errors.join("\n")}`;
+              ? `No plugin errors in ${latest.name}`
+              : `${errors.length} plugin error line(s) in ${latest.name}:\n${errors.join("\n")}`;
           }
           case "stats": {
             const info = pluginLines.filter((l) => l.includes("INFO")).length;
             const warn = pluginLines.filter((l) => l.includes("WARN")).length;
             const error = pluginLines.filter((l) => l.includes("ERROR")).length;
-            return `Plugin log stats from ${path.basename(latest)}: ${info} INFO, ${warn} WARN, ${error} ERROR`;
+            return `Plugin log stats from ${latest.name}: ${info} INFO, ${warn} WARN, ${error} ERROR`;
           }
         }
         return "Error: unknown action";

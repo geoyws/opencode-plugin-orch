@@ -12,7 +12,7 @@ import { TemplateRegistry } from "./templates/index.js";
 import { createTools } from "./tools/index.js";
 import { createEventHook } from "./hooks/events.js";
 import { createPermissionHook } from "./hooks/permissions.js";
-import { createActivityHook } from "./hooks/activity-tracker.js";
+import { createActivityHook, createActivityBeforeHook } from "./hooks/activity-tracker.js";
 import { Reporter } from "./core/reporter.js";
 import { revalidateMemberSessions } from "./core/revalidate.js";
 import { RateLimiterRegistry } from "./core/rate-limit.js";
@@ -145,6 +145,8 @@ async function doInit(
     }),
 
     "permission.ask": createPermissionHook(manager, fileLocks, input.directory),
+
+    "tool.execute.before": createActivityBeforeHook(manager, input.directory),
 
     "tool.execute.after": createActivityHook(manager, activity, input.directory),
   };

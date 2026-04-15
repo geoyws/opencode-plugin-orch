@@ -22,16 +22,18 @@ export function createTasksTool(
       "default mode is NOT atomic — on failure, already-created tasks are kept and the error reports the partial count, " +
       "and if two specs in the same call share a title, later by-title dependency lookups resolve to the most recently created task. " +
       "Pass atomic=true to validate the whole batch first (rejects duplicate titles in the batch and any unresolvable deps) " +
-      "and only commit if validation passes — guarantees all-or-nothing on bad input). " +
+      "and only commit if validation passes — guarantees all-or-nothing on bad input), " +
+      "deps (visualize the dep graph for the team — without taskID renders an ASCII tree from each root task; " +
+      "with taskID shows that task's upstream dependencies and downstream dependents). " +
       "Tasks with unmet dependencies cannot be claimed. Completed tasks auto-unblock dependents.",
     args: {
       team: tool.schema.string().describe("Team name"),
       action: tool.schema
-        .enum(["list", "add", "add_many", "claim", "complete", "fail", "unblock", "reassign"])
+        .enum(["list", "add", "add_many", "claim", "complete", "fail", "unblock", "reassign", "deps"])
         .describe("Action to perform"),
       title: tool.schema.string().optional().describe("Task title (for add)"),
       description: tool.schema.string().optional().describe("Task description (for add)"),
-      taskID: tool.schema.string().optional().describe("Task ID (for claim/complete/fail/unblock/reassign)"),
+      taskID: tool.schema.string().optional().describe("Task ID (for claim/complete/fail/unblock/reassign; optional for deps)"),
       to: tool.schema
         .string()
         .optional()
@@ -301,6 +303,88 @@ export function createTasksTool(
           return atomic
             ? `Added ${created.length} task${created.length === 1 ? "" : "s"} (atomic)`
             : `Added ${created.length} task${created.length === 1 ? "" : "s"}`;
+        }
+
+        case "deps": {
+          const tasks = board.listTasks(team.id);
+          if (tasks.length === 0) return `No tasks in team "${team.name}"`;
+
+          const byID = new Map(tasks.map((t) => [t.id, t]));
+
+          if (args.taskID) {
+            const focus = byID.get(args.taskID);
+            if (!focus) return `Error: Task ${args.taskID} not found`;
+
+            const upstream = focus.dependsOn
+              .map((id) => byID.get(id))
+              .filter((t): t is NonNullable<typeof t> => !!t);
+            const downstream = tasks.filter((t) => t.dependsOn.includes(focus.id));
+
+            const lines: string[] = [];
+            lines.push(`Task "${focus.title}" (id: ${focus.id}) [${focus.status}]:`);
+            lines.push("  Depends on (upstream):");
+            if (upstream.length === 0) {
+              lines.push("    (none)");
+            } else {
+              for (const t of upstream) {
+                lines.push(`    - ${t.title} (${t.status})`);
+              }
+            }
+            lines.push("  Required by (downstream):");
+            if (downstream.length === 0) {
+              lines.push("    (none)");
+            } else {
+              for (const t of downstream) {
+                lines.push(`    - ${t.title} (${t.status})`);
+              }
+            }
+            return lines.join("\n");
+          }
+
+          // Whole-graph mode. Build dependent-of map (parent → children
+          // where a child is any task that depends on the parent), find
+          // root tasks (no dependsOn), then walk the tree from each root.
+          // Diamond dependencies render the shared task once per parent
+          // (duplicate-render); future readers can switch to dedupe-and-
+          // mark if the noise becomes a problem.
+          const dependentsOf = new Map<string, string[]>();
+          for (const t of tasks) {
+            for (const depID of t.dependsOn) {
+              const arr = dependentsOf.get(depID) ?? [];
+              arr.push(t.id);
+              dependentsOf.set(depID, arr);
+            }
+          }
+          const roots = tasks.filter((t) => t.dependsOn.length === 0);
+          const lines: string[] = [`Task dependency graph for "${team.name}":`];
+
+          const renderNode = (id: string, prefix: string, isLast: boolean): void => {
+            const t = byID.get(id);
+            if (!t) return;
+            const branch = isLast ? "└─ " : "├─ ";
+            const depHint =
+              t.dependsOn.length > 0
+                ? ` (depends on ${t.dependsOn
+                    .map((d) => byID.get(d)?.title ?? d)
+                    .join(", ")})`
+                : "";
+            lines.push(`${prefix}${branch}${t.title}  [${t.status}]${depHint}`);
+            const childPrefix = prefix + (isLast ? "   " : "│  ");
+            const kids = dependentsOf.get(t.id) ?? [];
+            kids.forEach((kid, i) =>
+              renderNode(kid, childPrefix, i === kids.length - 1)
+            );
+          };
+
+          for (const root of roots) {
+            lines.push(`  ${root.title}  [${root.status}]`);
+            const kids = dependentsOf.get(root.id) ?? [];
+            kids.forEach((kid, i) =>
+              renderNode(kid, "  ", i === kids.length - 1)
+            );
+          }
+
+          return lines.join("\n");
         }
 
         default:

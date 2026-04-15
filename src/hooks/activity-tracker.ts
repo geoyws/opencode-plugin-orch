@@ -2,6 +2,28 @@ import type { TeamManager } from "../core/team-manager.js";
 import type { ActivityTracker } from "../core/activity.js";
 import { logHookError } from "./_safe.js";
 
+// Fires on tool.execute.before. Just bumps the member's lastActivityAt so
+// a long-running tool call (e.g. 30s bash) doesn't get flagged as idle
+// mid-flight. The after hook (createActivityHook) records the tool call
+// *and* bumps again once it completes.
+export function createActivityBeforeHook(
+  manager: TeamManager,
+  projectDir: string
+) {
+  return async (
+    input: { tool: string; sessionID: string; callID: string },
+    _output: unknown
+  ): Promise<void> => {
+    try {
+      const member = manager.getMemberBySession(input.sessionID);
+      if (!member) return;
+      manager.touchMember(member.id);
+    } catch (err) {
+      logHookError(projectDir, "tool.execute.before", err);
+    }
+  };
+}
+
 export function createActivityHook(
   manager: TeamManager,
   tracker: ActivityTracker,

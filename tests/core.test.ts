@@ -1189,6 +1189,65 @@ describe("Store", () => {
       store2.destroy();
     });
 
+    test("migrates pre-feature snapshot members (lastActivityAt=0) to now", async () => {
+      // Hand-write a snapshot with a member that predates the
+      // lastActivityAt field. The loader should anchor it to Date.now()
+      // so IdleMonitor's first sweep doesn't warn about every ready
+      // member just because the field is missing.
+      const snapPath = path.join(tmpDir, ".opencode", "plugin-orch", "snapshot.json");
+      fs.mkdirSync(path.dirname(snapPath), { recursive: true });
+      const ancientCreatedAt = Date.now() - 24 * 60 * 60 * 1000; // 1 day ago
+      const snap = {
+        timestamp: Date.now(),
+        teams: {
+          t1: {
+            id: "t1",
+            name: "Legacy",
+            leadSessionID: "s1",
+            config: { workStealing: true, backpressureLimit: 50 },
+            createdAt: ancientCreatedAt,
+          },
+        },
+        members: {
+          m1: {
+            id: "m1",
+            teamID: "t1",
+            sessionID: "sess_1",
+            role: "worker",
+            state: "ready",
+            instructions: "legacy",
+            files: [],
+            escalationLevel: 0,
+            retryCount: 0,
+            createdAt: ancientCreatedAt,
+            // lastActivityAt intentionally omitted — pre-feature snapshot
+          },
+        },
+        tasks: {},
+        messages: [],
+        costs: {},
+        locks: {},
+        scratchpads: {},
+      };
+      fs.writeFileSync(snapPath, JSON.stringify(snap), "utf-8");
+
+      const beforeLoad = Date.now();
+      const store2 = new Store(tmpDir);
+      await store2.init();
+      const afterLoad = Date.now();
+
+      const loaded = store2.getMember("m1");
+      expect(loaded).toBeDefined();
+      // lastActivityAt should be anchored to the load moment, not 0 or
+      // the ancient createdAt.
+      expect(loaded!.lastActivityAt).toBeGreaterThanOrEqual(beforeLoad);
+      expect(loaded!.lastActivityAt).toBeLessThanOrEqual(afterLoad);
+      // createdAt is preserved
+      expect(loaded!.createdAt).toBe(ancientCreatedAt);
+
+      store2.destroy();
+    });
+
     test("handles snapshot with missing required fields gracefully", async () => {
       // Hand-edited / partially-written snapshot that parses as JSON but
       // is missing the maps loadSnapshot() destructures. Without the

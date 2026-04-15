@@ -81,7 +81,19 @@ export class Store {
 
   private loadSnapshot(snap: Snapshot): void {
     this.teams = new Map(Object.entries(snap.teams));
-    this.members = new Map(Object.entries(snap.members));
+    // One-shot migration: pre-feature snapshots have members without a
+    // lastActivityAt field. Anchor them to "now" on load so the idle
+    // monitor's first sweep doesn't warn about every ready member just
+    // because their activity timestamp is missing.
+    const nowTs = Date.now();
+    this.members = new Map(
+      Object.entries(snap.members).map(([id, m]) => {
+        if (!m.lastActivityAt || m.lastActivityAt === 0) {
+          return [id, { ...m, lastActivityAt: nowTs }];
+        }
+        return [id, m];
+      })
+    );
     this.tasks = new Map(Object.entries(snap.tasks));
     this.messages = snap.messages;
     this.costs = snap.costs;

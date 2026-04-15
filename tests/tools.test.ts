@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { createHarness, makeToolContext, type Harness } from "./_harness.js";
 import { createTools } from "../src/tools/index.js";
 import { RateLimiterRegistry } from "../src/core/rate-limit.js";
-import { createLogTool } from "../src/tools/log.js";
+import { createLogTool, resolveLogDir } from "../src/tools/log.js";
 
 // ─── orch_create ──────────────────────────────────────────────────────
 describe("orch_create", () => {
@@ -1327,6 +1327,133 @@ describe("orch_tasks", () => {
     const titles = h.store.listTasks(teamID).map((t) => t.title).sort();
     // ps-1 and ps-2 persisted; bad and ps-4 did not.
     expect(titles).toEqual(["ps-1", "ps-2"]);
+  });
+
+  test("deps on an empty team returns a friendly empty message", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "deps" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe('No tasks in team "tt"');
+  });
+
+  test("deps without taskID renders the whole-team tree for a 3-task chain", async () => {
+    const specs = [
+      { title: "setup" },
+      { title: "build", dependsOn: ["setup"] },
+      { title: "ship", dependsOn: ["build"] },
+    ];
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: JSON.stringify(specs), atomic: true },
+      makeToolContext("lead-session")
+    );
+
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "deps" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('Task dependency graph for "tt"');
+    expect(result).toContain("setup");
+    expect(result).toContain("build");
+    expect(result).toContain("ship");
+    // Tree branch chars should appear for the chain.
+    expect(result).toMatch(/└─|├─/);
+    expect(result).toContain("(depends on setup)");
+    expect(result).toContain("(depends on build)");
+  });
+
+  test("deps with taskID for a root task shows '(none)' upstream", async () => {
+    const root = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "root-task" },
+      makeToolContext("lead-session")
+    );
+    const id = String(root).match(/id: (task_[a-z0-9_]+)/)![1];
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "deps", taskID: id },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('Task "root-task"');
+    expect(result).toContain("Depends on (upstream):");
+    expect(result).toContain("(none)");
+    expect(result).toContain("Required by (downstream):");
+  });
+
+  test("deps with taskID lists 2 upstream and 2 downstream", async () => {
+    const specs = [
+      { title: "u1" },
+      { title: "u2" },
+      { title: "focus", dependsOn: ["u1", "u2"] },
+      { title: "d1", dependsOn: ["focus"] },
+      { title: "d2", dependsOn: ["focus"] },
+    ];
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: JSON.stringify(specs), atomic: true },
+      makeToolContext("lead-session")
+    );
+    const focus = h.store.listTasks(teamID).find((t) => t.title === "focus")!;
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "deps", taskID: focus.id },
+      makeToolContext("lead-session")
+    );
+    expect(result).toContain('Task "focus"');
+    expect(result).toContain("- u1 (available)");
+    expect(result).toContain("- u2 (available)");
+    expect(result).toContain("- d1 (available)");
+    expect(result).toContain("- d2 (available)");
+    // (none) should NOT appear since there are upstream + downstream items.
+    expect(result).not.toContain("(none)");
+  });
+
+  test("deps with a non-existent taskID errors", async () => {
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add", title: "anchor" },
+      makeToolContext("lead-session")
+    );
+    const result = await h.tools.orch_tasks.execute(
+      { team: "tt", action: "deps", taskID: "task_does_not_exist" },
+      makeToolContext("lead-session")
+    );
+    expect(result).toBe("Error: Task task_does_not_exist not found");
+  });
+
+  test("deps on a non-existent team errors via requireTeam", async () => {
+    const result = await h.tools.orch_tasks.execute(
+      { team: "nope", action: "deps" },
+      makeToolContext("lead-session")
+    );
+    expect(String(result)).toMatch(/^Error:/);
+    expect(String(result)).toContain("nope");
+  });
+
+  test("deps renders a diamond — shared task appears under each parent (duplicate-render)", async () => {
+    // A is the root; B and C depend on A; D depends on both B and C.
+    // With duplicate-render semantics, D should appear once in B's
+    // subtree and once in C's subtree → 2 occurrences total.
+    const specs = [
+      { title: "A" },
+      { title: "B", dependsOn: ["A"] },
+      { title: "C", dependsOn: ["A"] },
+      { title: "D", dependsOn: ["B", "C"] },
+    ];
+    await h.tools.orch_tasks.execute(
+      { team: "tt", action: "add_many", tasks: JSON.stringify(specs), atomic: true },
+      makeToolContext("lead-session")
+    );
+    const result = String(
+      await h.tools.orch_tasks.execute(
+        { team: "tt", action: "deps" },
+        makeToolContext("lead-session")
+      )
+    );
+
+    // Count whole-word occurrences of "D" as a node label (preceded by a
+    // tree branch char or a leading space, followed by two spaces before
+    // the status bracket).
+    const dNodeMatches = result.match(/[├└]─ D  \[/g) ?? [];
+    expect(dNodeMatches.length).toBe(2);
+    // A appears exactly once as the top-level root line.
+    const aRootMatches = result.match(/^ {2}A {2}\[/gm) ?? [];
+    expect(aRootMatches.length).toBe(1);
   });
 });
 
@@ -2880,8 +3007,17 @@ describe("orch_log", () => {
     expect(result).toContain("2026-04-15T000000.log");
   });
 
-  test("tail picks the lexically-last .log file (most recent)", async () => {
+  test("tail picks the most recently modified .log file by mtime", async () => {
+    // Write in order so mtimes are strictly increasing. The mtime sort
+    // (replacing the old lexical sort) picks the file written second,
+    // regardless of name.
     writeLog("2026-04-14T000000.log", "INFO [orch] old line");
+    // Small mtime separation so the sort is unambiguous on fast FS.
+    fs.utimesSync(
+      path.join(tmpLogDir, "2026-04-14T000000.log"),
+      new Date(Date.now() - 10_000),
+      new Date(Date.now() - 10_000)
+    );
     writeLog("2026-04-15T000000.log", "INFO [orch] new line");
     const logTool = createLogTool({ findLogDir: () => tmpLogDir });
     const result = (await logTool.execute!(
@@ -2891,6 +3027,63 @@ describe("orch_log", () => {
     expect(result).toContain("new line");
     expect(result).not.toContain("old line");
     expect(result).toContain("2026-04-15T000000.log");
+  });
+
+  test("mtime sort wins over lexical — a non-timestamp name can be newest", async () => {
+    // Under the OLD lexical sort, `2026-01-01T000000.log` would beat
+    // `a-latest.log` (digits < letters in ASCII). Under the new mtime
+    // sort, whichever file was written most recently wins. We write
+    // the timestamped name FIRST with a backdated mtime, then the
+    // letter-prefixed name, and assert the letter-prefixed one wins.
+    writeLog("2026-01-01T000000.log", "INFO [orch] ancient line");
+    fs.utimesSync(
+      path.join(tmpLogDir, "2026-01-01T000000.log"),
+      new Date(Date.now() - 60_000),
+      new Date(Date.now() - 60_000)
+    );
+    writeLog("a-latest.log", "INFO [orch] freshest line");
+    const logTool = createLogTool({ findLogDir: () => tmpLogDir });
+    const result = (await logTool.execute!(
+      { action: "tail" },
+      makeToolContext("lead-session")
+    )) as string;
+    expect(result).toContain("freshest line");
+    expect(result).not.toContain("ancient line");
+    expect(result).toContain("a-latest.log");
+  });
+
+  test("resolveLogDir prefers Linux path on linux and macOS path on darwin", () => {
+    // Build a fake home containing BOTH trees. resolveLogDir must pick
+    // the platform-native one first when both exist.
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "orch-home-"));
+    const linuxTree = path.join(fakeHome, ".local/share/opencode/log");
+    const macTree = path.join(
+      fakeHome,
+      "Library/Application Support/opencode/log"
+    );
+    fs.mkdirSync(linuxTree, { recursive: true });
+    fs.mkdirSync(macTree, { recursive: true });
+
+    expect(resolveLogDir(fakeHome, "linux")).toBe(linuxTree);
+    expect(resolveLogDir(fakeHome, "darwin")).toBe(macTree);
+
+    // When only one tree exists, fall back to it regardless of platform.
+    const linuxOnlyHome = fs.mkdtempSync(path.join(os.tmpdir(), "orch-home-"));
+    fs.mkdirSync(path.join(linuxOnlyHome, ".local/share/opencode/log"), {
+      recursive: true,
+    });
+    expect(resolveLogDir(linuxOnlyHome, "darwin")).toBe(
+      path.join(linuxOnlyHome, ".local/share/opencode/log")
+    );
+
+    // Neither tree present → undefined.
+    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "orch-home-"));
+    expect(resolveLogDir(emptyHome, "linux")).toBeUndefined();
+    expect(resolveLogDir(emptyHome, "darwin")).toBeUndefined();
+
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(linuxOnlyHome, { recursive: true, force: true });
+    fs.rmSync(emptyHome, { recursive: true, force: true });
   });
 
   test("tail respects a user-supplied lines arg", async () => {
