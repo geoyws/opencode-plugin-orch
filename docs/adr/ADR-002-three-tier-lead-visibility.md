@@ -2,7 +2,6 @@
 
 **Status:** Accepted
 **Date:** 2026-04-14
-**Deciders:** George Yong, plugin-hardener agent
 
 ## Context
 

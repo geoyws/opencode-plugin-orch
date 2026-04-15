@@ -44,6 +44,45 @@ describe("RateLimiter", () => {
     expect(rl.tryAcquire("b")).toBe(false);
   });
 
+  test("currentUsage reports 0 for a fresh bucket", () => {
+    const rl = new RateLimiter({ windowMs: 60_000, maxCalls: 10 });
+    expect(rl.currentUsage("alice")).toBe(0);
+  });
+
+  test("currentUsage reports N after N tryAcquire calls", () => {
+    const rl = new RateLimiter({ windowMs: 60_000, maxCalls: 10 });
+    for (let i = 0; i < 5; i++) rl.tryAcquire("alice");
+    expect(rl.currentUsage("alice")).toBe(5);
+  });
+
+  test("currentUsage prunes stale entries past the window", async () => {
+    const rl = new RateLimiter({ windowMs: 30, maxCalls: 10 });
+    rl.tryAcquire("k");
+    rl.tryAcquire("k");
+    expect(rl.currentUsage("k")).toBe(2);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(rl.currentUsage("k")).toBe(0);
+  });
+
+  test("currentUsage is idempotent (repeated calls don't drain the bucket)", () => {
+    const rl = new RateLimiter({ windowMs: 60_000, maxCalls: 3 });
+    rl.tryAcquire("k");
+    rl.tryAcquire("k");
+    // Three back-to-back observations must agree.
+    expect(rl.currentUsage("k")).toBe(2);
+    expect(rl.currentUsage("k")).toBe(2);
+    expect(rl.currentUsage("k")).toBe(2);
+    // And the bucket still has one slot left — currentUsage was truly read-only.
+    expect(rl.tryAcquire("k")).toBe(true);
+    expect(rl.tryAcquire("k")).toBe(false);
+  });
+
+  test("maxCalls and windowMs getters expose the configured values", () => {
+    const rl = new RateLimiter({ windowMs: 30_000, maxCalls: 7 });
+    expect(rl.maxCalls).toBe(7);
+    expect(rl.windowMs).toBe(30_000);
+  });
+
   test("reset(key) clears only the named bucket", () => {
     const rl = new RateLimiter({ windowMs: 60_000, maxCalls: 1 });
     rl.tryAcquire("a");

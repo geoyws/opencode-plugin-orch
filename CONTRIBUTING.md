@@ -62,7 +62,7 @@ it covers. Existing ADRs live in [`docs/adr/`](docs/adr/):
 
 - [ADR-001](docs/adr/ADR-001-model-choice-for-live-testing.md) — model
   choice for live smoke tests (why we use `minimax-coding-plan/MiniMax-M2.7-highspeed`
-  on the hax box)
+  on the development box used for live testing)
 
 New ADRs land in the same directory with the next sequential number.
 Check `docs/adr/` for anything newer before you start.

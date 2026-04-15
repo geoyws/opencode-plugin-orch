@@ -17,12 +17,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   output. Actions: `tail` (last N matching lines, default 20, max 200),
   `errors` (ERROR-level lines only), `stats` (INFO/WARN/ERROR counts).
   Filters lines containing `[orch]` or `opencode-plugin-orch` (9782410)
-- feat: per-team rate limits, `orch_tasks add_many` (atomic batch),
-  reassign no-op detection, and ADR-004 closed-allowlist member tool
-  scoping via `client.tool.ids()` lookup with 500ms timeout (90edec4)
+- feat: per-team rate limits, `orch_tasks add_many` (sequential,
+  partial-success), `reassign` same-member no-op detection, and ADR-004
+  closed-allowlist member tool scoping via `client.tool.ids()` lookup
+  (90edec4)
 - feat: round 7 — snapshot corruption recovery, idle-member monitor,
-  broadcast role/agent filter, task `progress` field, task priority,
-  `orch_memo append` action, atomic `orch_tasks add_many`, and
+  broadcast `rolePattern` glob filter, task priority field,
+  `orch_result` progress bar (20-char █/░ renderer + JSON progress
+  object with `percent` / `completed` / `failed` / `remaining` / `total`),
+  `orch_memo append` + `prepend` actions, `orch_tasks add_many` atomic
+  mode (two-pass validate-then-commit), and
   `examples/feature-build-demo.md` getting-started walkthrough (a2a1396)
 - feat: round 9 — platform-aware log-dir lookup (`resolveLogDir`),
   `tool.execute.before` activity hook, snapshot migration for pre-feature

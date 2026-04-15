@@ -33,6 +33,100 @@ Features:
 - **Hardened error surfacing** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `init.log`). All hooks and tools are wrapped so throws can't break opencode. On startup you see `[orch] ready · 12 tools` as a success toast.
 - **Three-tier lead visibility for peer DMs** — when members message each other via `orch_message` / `orch_broadcast`, the lead sees it three ways: (1) **push** — a TUI toast fires immediately from the message bus; (2) **pull** — `orch_status` renders a `Recent messages:` section with the last few peer DMs; (3) **durable** — `orch_inbox` is an event-sourced queue with a `leadInboxLastSeenAt` cursor per team so the lead never misses messages across sessions. See [ADR-002](docs/adr/ADR-002-three-tier-lead-visibility.md).
 
+## Getting started
+
+A five-minute path from zero to your first orchestrated team.
+
+### 1. Prerequisites
+
+- **opencode** (>= 1.3) installed. See [opencode.ai](https://opencode.ai) for install instructions.
+- **[pnpm](https://pnpm.io)** and **[bun](https://bun.sh)** on your PATH (`pnpm` for installing, `bun` for the test runner).
+- **git**, **node 22+**.
+- An opencode-supported model. See [model recommendation](#recommended-model) below.
+
+### 2. Install the plugin
+
+```bash
+mkdir -p ~/work/src
+git clone https://github.com/geoyws/opencode-plugin-orch.git ~/work/src/opencode-plugin-orch
+cd ~/work/src/opencode-plugin-orch
+pnpm install        # pnpm's `prepare` script auto-runs `tsc` so dist/ is built
+```
+
+Then register the plugin in your opencode config at `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "plugin": ["../../work/src/opencode-plugin-orch"]
+}
+```
+
+The path is **relative on purpose** so the same config works across machines. See [Installation](#installation) below for the full explanation.
+
+### 3. Recommended model
+
+**We recommend [MiniMax M2.7 (highspeed)](https://www.minimax.io)** as the lead model for driving teams. Set it as your primary in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "model": "minimax-coding-plan/MiniMax-M2.7-highspeed",
+  "small_model": "minimax-coding-plan/MiniMax-M2.7-highspeed",
+  "plugin": ["../../work/src/opencode-plugin-orch"]
+}
+```
+
+Why MiniMax 2.7:
+
+- **Cheap coordination turns** — the lead fires a lot of `orch_message` / `orch_status` / `orch_tasks` calls between prompts. MiniMax 2.7's pricing lets you run multi-hour team sessions without burning through budget.
+- **Reliable tool-use** — the plugin's tool schemas are complex (multi-action enums, JSON arg blobs). MiniMax 2.7 reliably produces valid tool_use shapes.
+- **Verified end-to-end** — every live test in this repo runs against MiniMax 2.7; the evidence logs in [`docs/adr/`](docs/adr/) show successful real tool calls. See [ADR-001](docs/adr/ADR-001-model-choice-for-live-testing.md).
+
+Other models work (any opencode-supported provider can drive the plugin), but MiniMax 2.7 is the one we actively test against. If you already have Claude / GPT / Gemini credits, those work too — the plugin doesn't care which provider the lead uses.
+
+### 4. Verify it loads
+
+From any directory:
+
+```bash
+opencode run "What orch_* tools do you have available?"
+```
+
+The model should list all 12 tools (orch_create, orch_spawn, orch_message, orch_broadcast, orch_tasks, orch_memo, orch_status, orch_shutdown, orch_result, orch_inbox, orch_team, orch_log).
+
+Check the plugin loaded cleanly:
+
+```bash
+# Linux:
+LOG_DIR="$HOME/.local/share/opencode/log"
+# macOS:
+LOG_DIR="$HOME/Library/Application Support/opencode/log"
+
+ls -t "$LOG_DIR" | head -1 | xargs -I{} grep -E "orch|plugin" "$LOG_DIR/{}"
+```
+
+You want to see **`[orch] ready · 12 tools`** and **zero `plugin has no server entrypoint` warnings**. If something's off, see [Troubleshooting](#troubleshooting) below.
+
+### 5. Your first team
+
+Open opencode interactively and paste this prompt:
+
+> Create a `code-review` team called `first-team` using the built-in template. Then show me `orch_status` for it.
+
+The model should fire `orch_create` (which auto-spawns a reviewer and a fixer via the template), then `orch_status` which returns a powerline-formatted overview with both members and their states.
+
+Shut it down when you're done:
+
+> Call `orch_shutdown` on the `first-team` team.
+
+For a full walkthrough of a realistic feature-build workflow, see [`examples/feature-build-demo.md`](examples/feature-build-demo.md).
+
+### Troubleshooting
+
+- **No `orch_*` tools visible**: `dist/index.js` wasn't built. Run `pnpm install && pnpm run build` again. The `prepare` script in `package.json` should handle this automatically on install, but a stale checkout can miss it.
+- **`plugin has no server entrypoint` warning in logs**: your `package.json` might be missing the `./server` exports subpath. See [ADR-003](docs/adr/ADR-003-plugin-entrypoint-discovery.md) for the root cause; pulling the latest master fixes it.
+- **Plugin never loads**: check `orch_log action=tail` (once the plugin is minimally loaded) or grep the newest file in your opencode log dir for `service=plugin path=file://` to see which plugin path opencode tried to resolve. Make sure `dist/index.js` exists at that path.
+- **`ConnectionRefused http://localhost:11434`** spam in logs: your opencode config has a `small_model` pointing at a non-running ollama. Change it to your primary model (as shown in the [Recommended model](#recommended-model) section) or remove the `small_model` line entirely.
+
 ## Installation
 
 ### Option 1: Local checkout (current recommended)

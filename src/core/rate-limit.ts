@@ -43,6 +43,30 @@ export class RateLimiter {
     return Math.max(0, oldest + this.config.windowMs - now);
   }
 
+  /**
+   * Current call count in the active window for this key, without
+   * consuming the bucket. Side effect: prunes stale entries so the
+   * caller never sees ghost counts from an old window. Callers that
+   * need a truly read-only view should snapshot the result themselves.
+   */
+  currentUsage(key: string): number {
+    const now = Date.now();
+    const cutoff = now - this.config.windowMs;
+    const timestamps = (this.buckets.get(key) ?? []).filter((t) => t > cutoff);
+    this.buckets.set(key, timestamps);
+    return timestamps.length;
+  }
+
+  /** Configured maximum calls per window. */
+  get maxCalls(): number {
+    return this.config.maxCalls;
+  }
+
+  /** Configured window length in milliseconds. */
+  get windowMs(): number {
+    return this.config.windowMs;
+  }
+
   reset(key?: string): void {
     if (key === undefined) this.buckets.clear();
     else this.buckets.delete(key);

@@ -1982,6 +1982,130 @@ describe("orch_status", () => {
   });
 });
 
+// ─── orch_status rate-limit section ──────────────────────────────────
+// Opt-in section rendered when `rateLimits: true`. These tests use
+// explicit per-team rateLimit configs because the shared harness uses a
+// huge default cap (100_000) to keep unrelated tests from bumping into
+// limits; we want realistic caps here so percent/warning thresholds
+// fire at sane values.
+describe("orch_status rate-limit section", () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await createHarness();
+  });
+  afterEach(() => { h.cleanup(); });
+
+  test("shows 0/cap for each member when nothing has been acquired", async () => {
+    h.manager.createTeam("rl", "lead-session", {
+      rateLimit: { windowMs: 60_000, maxCalls: 60 },
+    });
+    for (const role of ["reviewer", "coder"]) {
+      await h.tools.orch_spawn.execute(
+        { team: "rl", role, instructions: "x" },
+        makeToolContext("lead-session")
+      );
+    }
+    const result = String(
+      await h.tools.orch_status.execute(
+        { team: "rl", rateLimits: true },
+        makeToolContext("lead-session")
+      )
+    );
+    expect(result).toContain('Rate limits for "rl"');
+    expect(result).toContain("60 calls/60s per member");
+    expect(result).toContain("reviewer");
+    expect(result).toContain("coder");
+    expect(result).toContain("0/60");
+    expect(result).toContain("(0%)");
+    expect(result).not.toContain("⚠");
+  });
+
+  test("mid-range usage renders percent without the warning marker", async () => {
+    h.manager.createTeam("rl", "lead-session", {
+      rateLimit: { windowMs: 60_000, maxCalls: 60 },
+    });
+    await h.tools.orch_spawn.execute(
+      { team: "rl", role: "coder", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const team = h.store.getTeamByName("rl")!;
+    const coder = h.store.getMemberByRole(team.id, "coder")!;
+    const limiter = h.rateLimiter.forTeam(team.id, team.config.rateLimit);
+    for (let i = 0; i < 30; i++) limiter.tryAcquire(coder.id);
+
+    const result = String(
+      await h.tools.orch_status.execute(
+        { team: "rl", rateLimits: true },
+        makeToolContext("lead-session")
+      )
+    );
+    expect(result).toContain("30/60");
+    expect(result).toContain("(50%)");
+    expect(result).not.toContain("⚠");
+  });
+
+  test("flags any member at ≥80% of cap with a ⚠ marker", async () => {
+    h.manager.createTeam("rl", "lead-session", {
+      rateLimit: { windowMs: 60_000, maxCalls: 5 },
+    });
+    await h.tools.orch_spawn.execute(
+      { team: "rl", role: "coder", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const team = h.store.getTeamByName("rl")!;
+    const coder = h.store.getMemberByRole(team.id, "coder")!;
+    const limiter = h.rateLimiter.forTeam(team.id, team.config.rateLimit);
+    // 4/5 = 80% — exactly on the threshold, which must trigger.
+    for (let i = 0; i < 4; i++) limiter.tryAcquire(coder.id);
+
+    const result = String(
+      await h.tools.orch_status.execute(
+        { team: "rl", rateLimits: true },
+        makeToolContext("lead-session")
+      )
+    );
+    expect(result).toContain("4/5");
+    expect(result).toContain("(80%)");
+    expect(result).toContain("⚠");
+  });
+
+  test("no rate-limit section is rendered when the arg is absent", async () => {
+    h.manager.createTeam("rl", "lead-session", {
+      rateLimit: { windowMs: 60_000, maxCalls: 60 },
+    });
+    await h.tools.orch_spawn.execute(
+      { team: "rl", role: "reviewer", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const result = String(
+      await h.tools.orch_status.execute(
+        { team: "rl" },
+        makeToolContext("lead-session")
+      )
+    );
+    expect(result).not.toContain("Rate limits");
+    expect(result).not.toContain("/60");
+  });
+
+  test("team-customized cap appears in the section header, not the default", async () => {
+    h.manager.createTeam("rl", "lead-session", {
+      rateLimit: { windowMs: 30_000, maxCalls: 10 },
+    });
+    await h.tools.orch_spawn.execute(
+      { team: "rl", role: "coder", instructions: "x" },
+      makeToolContext("lead-session")
+    );
+    const result = String(
+      await h.tools.orch_status.execute(
+        { team: "rl", rateLimits: true },
+        makeToolContext("lead-session")
+      )
+    );
+    expect(result).toContain("10 calls/30s per member");
+    expect(result).toContain("0/10");
+  });
+});
+
 // ─── orch_shutdown ────────────────────────────────────────────────────
 describe("orch_shutdown", () => {
   let h: Harness;

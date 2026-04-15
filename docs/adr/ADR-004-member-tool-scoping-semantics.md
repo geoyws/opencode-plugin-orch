@@ -2,7 +2,6 @@
 
 **Status:** Accepted
 **Date:** 2026-04-15
-**Deciders:** George Yong, plugin-hardener agent
 
 ## Context
 
@@ -36,7 +35,7 @@ The behavior is not documented on the opencode side. The only source of truth is
 
 ## Investigation
 
-opencode on hax is distributed as a single Bun-compiled binary at `/root/.opencode/bin/opencode` (~166 MB). Using `strings` on the binary and grepping for the `body.tools` handling surfaced four code paths that together pin down the semantics:
+opencode is distributed as a single Bun-compiled binary (installed under `~/.opencode/bin/opencode` on the dev box, ~166 MB). Using `strings` on the binary and grepping for the `body.tools` handling surfaced four code paths that together pin down the semantics:
 
 **1. `body.tools` → `session.permission` translation** (inside the session-prompt handler). Each entry is converted into one permission rule with `pattern: "*"`, and the resulting rule array **replaces** `session.permission` wholesale — it is not merged with the prior session-level rules:
 
@@ -129,7 +128,7 @@ Putting these together: when a member's session is prompted with `body.tools = M
 
 ## References
 
-- **Opencode binary**: `/root/.opencode/bin/opencode` on hax. All four code snippets in the Investigation section were extracted via `strings` against this binary. If opencode ships a new release the strings may move; re-run with `strings /root/.opencode/bin/opencode | grep 'input.tools'` and `| grep 'EDIT_TOOLS'` to relocate them.
+- **Opencode binary**: `~/.opencode/bin/opencode` on the dev box. All four code snippets in the Investigation section were extracted via `strings` against this binary. If opencode ships a new release the strings may move; re-run with `strings "$HOME/.opencode/bin/opencode" | grep 'input.tools'` and `| grep 'EDIT_TOOLS'` to relocate them.
 - **SDK method**: `OpencodeClient.tool.ids()` → `Array<string>` wrapped in `{ data }` by the hey-api client. Declared in `node_modules/@opencode-ai/sdk/dist/gen/sdk.gen.d.ts:82` (class `Tool`, method `ids`) and `node_modules/@opencode-ai/sdk/dist/gen/types.gen.d.ts:1215` (`ToolIds = Array<string>`) / `:1702` (`ToolIdsData` with `url: "/experimental/tool/ids"`).
 - **Implementation**: `src/core/team-manager.ts` — `computeMemberToolsAllowed` (helper) and `spawnMember` (registry fetch + call site).
 - **Tests**: `tests/member-tools.test.ts` — the `computeMemberToolsAllowed knownToolIds closure (ADR-004)` describe block covers the five closure behaviors (unknown `orch_*` denied, non-orch ignored, known `orch_*` defaults preserved, `additional` escape hatch wins, null-case parity).

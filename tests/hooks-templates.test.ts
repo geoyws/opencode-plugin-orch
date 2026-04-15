@@ -1014,7 +1014,7 @@ describe("createActivityHook", () => {
 
     const hook = createActivityHook(mockManager, mockTracker, "/tmp");
 
-    const longCommand = "find /root/work/src -name '*.ts' -exec grep -l 'TODO' {} +";
+    const longCommand = "find ./src -name '*.ts' -exec grep -l 'TODO' {} + --some-extra-flag";
     await hook(
       { tool: "bash", sessionID: "member-session-1", callID: "call-6", args: { command: longCommand } },
       { title: "bash", output: "results", metadata: {} }

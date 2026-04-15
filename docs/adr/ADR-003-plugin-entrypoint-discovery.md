@@ -2,14 +2,13 @@
 
 **Status:** Accepted
 **Date:** 2026-04-14
-**Deciders:** George Yong, plugin-hardener agent
 
 ## Context
 
-For several debugging rounds, `opencode-plugin-orch` looked broken under `opencode run` on hax even though the in-process test suite (333+ tests at the time) was entirely green. Every live run produced the same symptom: none of the `orch_*` tools were registered, no `[orch]` log lines appeared, and the only breadcrumb was a single WARN line buried in the opencode log:
+For several debugging rounds, `opencode-plugin-orch` looked broken under `opencode run` on the dev box even though the in-process test suite (333+ tests at the time) was entirely green. Every live run produced the same symptom: none of the `orch_*` tools were registered, no `[orch]` log lines appeared, and the only breadcrumb was a single WARN line buried in the opencode log:
 
 ```
-WARN service=plugin path=file:///root/work/src/opencode-plugin-orch
+WARN service=plugin path=file://<checkout-path>
      message=Plugin ... does not expose a server entrypoint plugin has no server entrypoint
 ```
 
@@ -49,7 +48,7 @@ In addition, we document the discovery mechanism here so the next plugin author 
 
 **Positive.**
 
-- After the fix, the full load path is proven end-to-end on hax: opencode resolves `./server` → imports `dist/index.js` → reads `export const server = plugin` → calls `plugin({ app, client })` → init runs → tool registry fires → all 11 `orch_*` tools appear in the model's toolbelt. This is now captured in ADR-001's smoke-test procedure.
+- After the fix, the full load path is proven end-to-end on the dev box: opencode resolves `./server` → imports `dist/index.js` → reads `export const server = plugin` → calls `plugin({ app, client })` → init runs → tool registry fires → all 11 `orch_*` tools appear in the model's toolbelt. This is now captured in ADR-001's smoke-test procedure.
 - Every consumer path works: `pnpm add opencode-plugin-orch`, a local relative path in `opencode.json`, a `file://` URL, and a symlinked checkout all resolve through the same `./server` subpath.
 - Future plugin authors reading this repo have a concrete example of the discovery contract, rather than having to re-derive it from reading the opencode binary.
 
@@ -61,7 +60,7 @@ In addition, we document the discovery mechanism here so the next plugin author 
 
 ## References
 
-- **Pre-fix evidence**: `~/.local/share/opencode/log/2026-04-14T020438.log` on hax — the log containing the bare `WARN ... plugin has no server entrypoint` line. Captured during the hook-hardener agent's initial smoke-test attempt before the root cause was known.
+- **Pre-fix evidence**: a local opencode log captured on the dev box during the initial smoke-test attempt — contained the bare `WARN ... plugin has no server entrypoint` line before the root cause was known.
 - **Wrong-fix attempt**: commit `75ba706` — "fix: export server as named export for opencode plugin discovery". This commit added the named `export const server = plugin` to `dist/index.js` under the assumption that the plugin just needed a named export. It did not fix the load failure because opencode was never importing the file.
 - **Actual fix**: commit `0b68d76` — "fix: add ./server exports subpath + live-test ADR-001". Adds the one-line `exports["./server"]` entry and ships ADR-001 capturing the live-test verification.
 - **Loader function in opencode**: `resolvePackageEntrypoint(spec, "server", pkg)` — reads `pkg.exports["./server"]` then falls back to `pkg.main`. Found by reading the opencode binary; if the function is renamed in a future release this ADR should be updated.

@@ -36,6 +36,14 @@ export function createStatusTool(
         .boolean()
         .optional()
         .describe("Show detailed task list (default: false)"),
+      rateLimits: tool.schema
+        .boolean()
+        .optional()
+        .describe(
+          "Append a rate-limit usage section showing each member's current " +
+          "call count against the team's cap. Marks any member at ≥80% of " +
+          "their cap with a ⚠. Default: false."
+        ),
     },
     async execute(args, context) {
       try {
@@ -122,6 +130,28 @@ export function createStatusTool(
             ? store.getMember(t.assignee)?.role ?? "?"
             : "-";
           lines.push(`  [${t.status}] ${t.title} (${assignee})`);
+        }
+      }
+
+      // Rate-limit usage section — opt-in via rateLimits arg so the default
+      // output stays compact. Uses the same registry/config resolution as
+      // checkRate() so the numbers line up with what members actually see
+      // when they get rate-limited. currentUsage() is non-consuming (prunes
+      // stale entries as a side effect, which is desirable here).
+      if (args.rateLimits) {
+        const limiter = rateLimiter.forTeam(team.id, team.config.rateLimit);
+        const max = limiter.maxCalls;
+        const windowSec = Math.round(limiter.windowMs / 1000);
+        lines.push("");
+        lines.push(
+          `Rate limits for "${team.name}" (${max} calls/${windowSec}s per member):`
+        );
+        for (const m of members) {
+          const used = limiter.currentUsage(m.id);
+          const pct = max > 0 ? Math.round((used / max) * 100) : 0;
+          const warn = pct >= 80 ? " ⚠" : "";
+          const role = m.role.padEnd(maxRoleLen);
+          lines.push(`  ${role}  ${used}/${max}  (${pct}%)${warn}`);
         }
       }
 
