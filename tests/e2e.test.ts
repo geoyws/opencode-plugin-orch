@@ -24,6 +24,13 @@ const DIST_EXISTS = fs.existsSync(PLUGIN_PATH);
 // the first time the server handles a request for a new project dir).
 const BOOT_TIMEOUT_MS = 120_000;
 
+// Skip in CI — these tests spawn a real `opencode serve` subprocess via
+// createOpencode(), which requires the opencode binary to be installed on
+// the runner. GitHub Actions runners don't have opencode, so beforeAll
+// fails. Locally on dev machines these tests do run and cover the real
+// HTTP + SSE + plugin-loading path.
+const SKIP_E2E = !DIST_EXISTS || process.env.CI === "true";
+
 const ORCH_TOOL_IDS = [
   "orch_create",
   "orch_spawn",
@@ -36,7 +43,7 @@ const ORCH_TOOL_IDS = [
   "orch_result",
 ] as const;
 
-describe.skipIf(!DIST_EXISTS)("e2e: real opencode server with plugin loaded", () => {
+describe.skipIf(SKIP_E2E)("e2e: real opencode server with plugin loaded", () => {
   let server: { url: string; close(): void } | undefined;
   let client: OpencodeClient;
   let tmpDir: string;
