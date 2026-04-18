@@ -114,7 +114,7 @@ async function doInit(
   // user-input silence. Shares whip-prompt.md with the Claude Code harness
   // so both behave identically. Graceful no-op when the prompt file is
   // missing.
-  const whipMonitor = new WhipMonitor(input.client, reporter);
+  const whipMonitor = new WhipMonitor(input.client, reporter, { directory: input.directory });
 
   // ── Session revalidation ────────────────────────────────────────
   // Members recovered from snapshot/JSONL may reference opencode sessions

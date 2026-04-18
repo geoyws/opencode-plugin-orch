@@ -35,6 +35,7 @@ interface WhipClient {
     promptAsync(params: {
       path: { id: string };
       body: { parts: Array<{ type: "text"; text: string }> };
+      query?: { directory?: string };
     }): Promise<unknown>;
   };
 }
@@ -58,6 +59,7 @@ export class WhipMonitor {
     private opts: {
       delayMs?: number;
       promptPath?: string;
+      directory?: string;
     } = {}
   ) {}
 
@@ -137,6 +139,7 @@ export class WhipMonitor {
       await this.client.session.promptAsync({
         path: { id: sessionID },
         body: { parts: [{ type: "text", text: prompt }] },
+        query: this.opts.directory ? { directory: this.opts.directory } : undefined,
       });
     } catch (err) {
       // Injection failed — clear the suppression flag so we don't swallow a

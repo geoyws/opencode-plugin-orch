@@ -152,12 +152,20 @@ export class TeamManager {
       throw new Error(`Role "${opts.role}" already exists in team "${team.name}"`);
     }
 
-    // Create session
+    // Create session. `query.directory` scopes every session API call to the
+    // project this plugin is running in — critical in git worktrees, where
+    // the opencode server has multiple project directories registered and
+    // falls back to the wrong one without it (manifesting as code-type
+    // members dying immediately with `state: "error"` because their custom
+    // agent config lives in the worktree dir but the session was routed
+    // elsewhere).
+    const directory = this.ctx.directory;
     const session = await this.ctx.client.session.create({
       body: {
         parentID: team.leadSessionID,
         title: `[orch] ${team.name} | ${opts.role}`,
       },
+      query: { directory },
     });
     const sessionID = (session.data as { id: string }).id;
 
@@ -183,7 +191,7 @@ export class TeamManager {
         timer = setTimeout(() => reject(new Error("tool.ids timeout")), 500);
       });
       const toolIdsRes = await Promise.race([
-        this.ctx.client.tool.ids(),
+        this.ctx.client.tool.ids({ query: { directory } }),
         timeout,
       ]);
       const data = (toolIdsRes as { data?: unknown }).data;
@@ -220,7 +228,7 @@ export class TeamManager {
       const fileParts: Array<{ type: "text"; text: string }> = [];
       for (const filePath of opts.files) {
         try {
-          const result = await this.ctx.client.file.read({ query: { path: filePath } });
+          const result = await this.ctx.client.file.read({ query: { path: filePath, directory } });
           const content = (result.data as { content?: string })?.content ?? "";
           fileParts.push({ type: "text", text: `[File: ${filePath}]\n${content}` });
         } catch {
@@ -234,6 +242,7 @@ export class TeamManager {
             noReply: true,
             parts: fileParts,
           },
+          query: { directory },
         });
       }
     }
@@ -282,6 +291,7 @@ export class TeamManager {
         model?: { providerID: string; modelID: string };
         tools?: Record<string, boolean>;
       },
+      query: { directory },
     });
 
     return member;
@@ -319,7 +329,10 @@ export class TeamManager {
         // Already in a terminal state
       }
       try {
-        await this.ctx.client.session.abort({ path: { id: member.sessionID } });
+        await this.ctx.client.session.abort({
+          path: { id: member.sessionID },
+          query: { directory: this.ctx.directory },
+        });
       } catch {
         // Session may already be gone
       }

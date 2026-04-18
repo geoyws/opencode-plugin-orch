@@ -55,13 +55,17 @@ export class EscalationManager {
 
   private async respawnMember(member: Member): Promise<void> {
     try {
-      // Create new session for the escalated attempt
+      // Create new session for the escalated attempt. Scope every call to
+      // the plugin's project directory so worktree-bound sessions route
+      // correctly (see team-manager.ts for the full rationale).
       const team = this.store.getTeam(member.teamID)!;
+      const directory = this.ctx.directory;
       const session = await this.ctx.client.session.create({
         body: {
           parentID: team.leadSessionID,
           title: `[orch] ${team.name} | ${member.role} (retry)`,
         },
+        query: { directory },
       });
       const sessionID = (session.data as { id: string }).id;
 
@@ -85,6 +89,7 @@ export class EscalationManager {
       await this.ctx.client.session.promptAsync({
         path: { id: sessionID },
         body,
+        query: { directory },
       });
     } catch {
       // Failed to respawn — leave in error state

@@ -148,6 +148,7 @@ export class MessageBus {
       await this.ctx.client.session.promptAsync({
         path: { id: member.sessionID },
         body,
+        query: { directory: this.ctx.directory },
       });
 
       // Mark all as delivered

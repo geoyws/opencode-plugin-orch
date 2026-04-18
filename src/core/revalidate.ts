@@ -38,8 +38,16 @@ export async function revalidateMemberSessions(
       const results = await Promise.all(
         live.map(async (m) => {
           const probe = (ctx.client as unknown as {
-            session: { get(params: { path: { id: string } }): Promise<unknown> };
-          }).session.get({ path: { id: m.sessionID } });
+            session: {
+              get(params: {
+                path: { id: string };
+                query?: { directory?: string };
+              }): Promise<unknown>;
+            };
+          }).session.get({
+            path: { id: m.sessionID },
+            query: { directory: ctx.directory },
+          });
 
           const timer = new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
             setTimeout(() => resolve(TIMEOUT_SENTINEL), PROBE_TIMEOUT_MS);

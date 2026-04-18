@@ -107,6 +107,7 @@ export function createEventHook(deps: EventDeps) {
               await ctx.client.session.promptAsync({
                 path: { id: member.sessionID },
                 body: stealBody,
+                query: { directory: ctx.directory },
               });
               await ctx.client.tui.showToast({
                 body: {

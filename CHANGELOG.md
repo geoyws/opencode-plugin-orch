@@ -84,6 +84,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - fix: round 8 nits + `orch_log` initial implementation (9782410)
 - fix(ci): skip `tests/e2e.test.ts` in CI where the `opencode` binary
   isn't available (8245a86)
+- fix: thread `query.directory` into every opencode SDK call (session
+  create/prompt/promptAsync/abort/get, file.read, tool.ids) so sessions
+  route to the plugin's project directory. Without it, opencode's server
+  routed calls to a fallback project in git worktrees, which caused
+  code-type members to spawn and immediately die with `state: "error"`
+  (their custom `"code"` agent config lived in the worktree dir the
+  server never looked at). Built-in agents like `"plan"` survived
+  because they resolve regardless of the routed project. Adds
+  `tests/directory-routing.test.ts` as a regression fence
 
 ## [0.1.1] - 2026-04-13
 
