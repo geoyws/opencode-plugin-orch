@@ -17,6 +17,7 @@ import { Reporter } from "./core/reporter.js";
 import { revalidateMemberSessions } from "./core/revalidate.js";
 import { RateLimiterRegistry } from "./core/rate-limit.js";
 import { IdleMonitor } from "./core/idle-monitor.js";
+import { WhipMonitor } from "./core/whip-monitor.js";
 
 const INIT_TIMEOUT_MS = 5000;
 
@@ -108,6 +109,13 @@ async function doInit(
   const idleMonitor = new IdleMonitor(store, reporter);
   idleMonitor.start();
 
+  // ── Whip monitor ────────────────────────────────────────────────
+  // Injects the shared /whip prompt into a lead session after ~15 min of
+  // user-input silence. Shares whip-prompt.md with the Claude Code harness
+  // so both behave identically. Graceful no-op when the prompt file is
+  // missing.
+  const whipMonitor = new WhipMonitor(input.client, reporter);
+
   // ── Session revalidation ────────────────────────────────────────
   // Members recovered from snapshot/JSONL may reference opencode sessions
   // that no longer exist. Walk them now and force-shutdown the dead ones
@@ -142,6 +150,7 @@ async function doInit(
       escalation,
       ctx: input,
       reporter,
+      whipMonitor,
     }),
 
     "permission.ask": createPermissionHook(manager, fileLocks, input.directory),
@@ -154,6 +163,7 @@ async function doInit(
   // Graceful shutdown — flush state on process exit
   const cleanup = () => {
     idleMonitor.stop();
+    whipMonitor.stop();
     store.destroy();
   };
   process.on("beforeExit", cleanup);

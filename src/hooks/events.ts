@@ -8,6 +8,7 @@ import type { FileLockManager } from "../core/file-locks.js";
 import type { EscalationManager } from "../core/escalation.js";
 import type { Store } from "../state/store.js";
 import type { Reporter } from "../core/reporter.js";
+import type { WhipMonitor } from "../core/whip-monitor.js";
 
 interface EventDeps {
   store: Store;
@@ -19,10 +20,11 @@ interface EventDeps {
   escalation: EscalationManager;
   ctx: PluginInput;
   reporter: Reporter;
+  whipMonitor?: WhipMonitor;
 }
 
 export function createEventHook(deps: EventDeps) {
-  const { store, manager, bus, board, costs, fileLocks, escalation, ctx, reporter } = deps;
+  const { store, manager, bus, board, costs, fileLocks, escalation, ctx, reporter, whipMonitor } = deps;
 
   return async ({ event }: { event: Event }): Promise<void> => {
     try {
@@ -30,6 +32,14 @@ export function createEventHook(deps: EventDeps) {
       // ── Session became idle ───────────────────────────────────
       case "session.idle": {
         const sessionID = event.properties.sessionID;
+
+        // Whip: arm timer when a lead session idles. Safe no-op for
+        // member sessions (the monitor only fires for sessions we've
+        // explicitly tracked via user-message events on lead sessions).
+        if (whipMonitor && manager.isLeadSession(sessionID)) {
+          whipMonitor.onAssistantIdle(sessionID);
+        }
+
         const member = manager.getMemberBySession(sessionID);
         if (!member) return;
 
@@ -186,6 +196,14 @@ export function createEventHook(deps: EventDeps) {
             };
           };
         };
+
+        // User message on a lead session → reset the whip timer.
+        if (props.info.role === "user" && whipMonitor) {
+          if (manager.isLeadSession(props.info.sessionID)) {
+            whipMonitor.onUserMessage(props.info.sessionID);
+          }
+          return;
+        }
 
         if (props.info.role !== "assistant") return;
 
