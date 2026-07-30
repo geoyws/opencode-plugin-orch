@@ -1,169 +1,85 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
-import type { TeamManager } from "../core/team-manager.js";
-import type { CostTracker } from "../core/cost-tracker.js";
-import type { ActivityTracker } from "../core/activity.js";
-import type { TaskBoard } from "../core/task-board.js";
 import type { Store } from "../state/store.js";
-import type { RateLimiterRegistry } from "../core/rate-limit.js";
-import { stateIcon } from "../core/member.js";
-import { checkRate } from "./_rate.js";
+import type { WorkflowRegistry } from "../workflows/index.js";
 
-function formatAge(ms: number): string {
+function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s ago`;
+  if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  return `${h}h ${m % 60}m`;
 }
 
 export function createStatusTool(
-  manager: TeamManager,
-  costs: CostTracker,
-  activity: ActivityTracker,
-  board: TaskBoard,
   store: Store,
-  rateLimiter: RateLimiterRegistry
+  workflows: WorkflowRegistry
 ): ToolDefinition {
   return tool({
     description:
-      "Show a powerline-formatted team overview with member states, " +
-      "current activity, costs, and task progress.",
+      "Show run detail: pattern, status, per-step state, current iteration " +
+      "(evaluator), and timing. Accepts a run id or unique id prefix.",
     args: {
-      team: tool.schema.string().describe("Team name"),
-      verbose: tool.schema
-        .boolean()
-        .optional()
-        .describe("Show detailed task list (default: false)"),
-      rateLimits: tool.schema
-        .boolean()
-        .optional()
-        .describe(
-          "Append a rate-limit usage section showing each member's current " +
-          "call count against the team's cap. Marks any member at ≥80% of " +
-          "their cap with a ⚠. Default: false."
-        ),
+      run: tool.schema.string().describe("Run id or unique id prefix"),
     },
-    async execute(args, context) {
+    async execute(args) {
       try {
-      const team = manager.requireTeam(args.team);
-      const rateErr = checkRate(rateLimiter, context, manager, team);
-      if (rateErr) return rateErr;
-      const members = manager.listMembers(team.id);
-      const tasks = board.listTasks(team.id);
-      const teamCost = costs.getTeamCost(team.id);
+        const run = store.findRun(args.run);
+        if (!run) return `Error: Run "${args.run}" not found`;
 
-      const activeCount = members.filter((m) =>
-        !["shutdown", "error"].includes(m.state)
-      ).length;
-      const completedTasks = tasks.filter((t) => t.status === "completed").length;
+        const now = Date.now();
+        const lines = [
+          `Run ${run.id} — ${run.workflow} [${run.pattern}] — ${run.status}`,
+        ];
+        if (run.pattern === "evaluator" && run.status === "running") {
+          lines.push(`Iteration: ${run.iteration}/${run.config.maxIterations}`);
+        }
+        lines.push(
+          `Started: ${new Date(run.createdAt).toISOString()} (${formatDuration(
+            (run.completedAt ?? now) - run.createdAt
+          )}${run.completedAt ? "" : ", still running"})`
+        );
+        if (run.error) lines.push(`Error: ${run.error}`);
+        if (run.note) lines.push(`Note: ${run.note}`);
 
-      // Header
-      const header = ` ${team.name}  ${activeCount}/${members.length} active  tasks ${completedTasks}/${tasks.length} done  ${costs.formatCost(teamCost)} `;
-
-      // Member rows. If a ready member is past its idle timeout, surface
-      // the staleness in the activity column so the lead sees it without
-      // having to wait for the IdleMonitor warning toast.
-      const now = Date.now();
-      const idleTimeout = team.config.idleTimeoutMs ?? 600_000;
-      const maxRoleLen = Math.max(...members.map((m) => m.role.length), 8);
-      const memberRows = members.map((m) => {
-        const icon = stateIcon(m.state);
-        const role = m.role.padEnd(maxRoleLen);
-        const state = m.state.padEnd(7);
-        let act = activity.formatActivity(m.id);
-        if (m.state === "ready") {
-          const age = now - (m.lastActivityAt ?? 0);
-          if (age >= idleTimeout) {
-            const mins = Math.floor(age / 60_000);
-            act = `idle ${mins}m`;
+        // Steps present in the run record (started or finished).
+        const steps = Object.values(run.steps);
+        const shown = new Set<string>();
+        lines.push("", "Steps:");
+        if (steps.length === 0) lines.push("  (no steps started yet)");
+        for (const s of steps) {
+          shown.add(s.id);
+          const timing = s.startedAt
+            ? ` ${formatDuration((s.completedAt ?? now) - s.startedAt)}`
+            : "";
+          const err = s.error ? ` — ${s.error}` : "";
+          lines.push(`  [${s.status}] ${s.id}${timing}${err}`);
+          if (s.isolationFallback) {
+            lines.push("    isolation fallback: ran in main directory");
+          }
+          if (s.copiedFiles && s.copiedFiles.length > 0) {
+            lines.push(`    copied ${s.copiedFiles.length} file(s) from worktree`);
+          }
+          if (s.conflicts && s.conflicts.length > 0) {
+            lines.push(`    conflicts: ${s.conflicts.join(", ")}`);
+          }
+          if (s.skippedSymlinks && s.skippedSymlinks.length > 0) {
+            lines.push(`    skipped symlinks: ${s.skippedSymlinks.join(", ")}`);
           }
         }
-        const cost = costs.formatCost(costs.getMemberCost(m.id));
-        return `│ ${role}  ${icon} ${state} ${act.padEnd(30)} ${cost}│`;
-      });
 
-      const width = Math.max(header.length, ...memberRows.map((r) => r.length), 48);
-      const border = "─".repeat(width - 2);
-
-      const lines = [
-        header,
-        `╭${border}╮`,
-        ...memberRows,
-        `╰${border}╯`,
-      ];
-
-      // Recent peer messages — surfaces member-to-member chatter that the lead
-      // would otherwise miss. Lead-originated messages are excluded because
-      // the lead already saw them when they sent them.
-      const limit = args.verbose ? 20 : 5;
-      const peerMessages = store
-        .getTeamMessages(team.id)
-        .filter((m) => m.from !== "lead")
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, limit);
-      lines.push("");
-      if (peerMessages.length === 0) {
-        lines.push("Recent messages: (none)");
-      } else {
-        lines.push("Recent messages:");
-        for (const m of peerMessages.reverse()) {
-          const fromRole = store.getMember(m.from)?.role ?? m.from;
-          const toRole = store.getMember(m.to)?.role ?? m.to;
-          const body = args.verbose
-            ? m.content
-            : m.content.length > 50
-              ? m.content.slice(0, 49) + "…"
-              : m.content;
-          const age = formatAge(Date.now() - m.createdAt);
-          lines.push(`  ${fromRole} → ${toRole}  "${body}" (${age})`);
+        // Def steps that haven't started yet read as pending (chain/routing/
+        // evaluator ids are known upfront; parallel ids too).
+        const def = workflows.get(run.workflow);
+        if (def) {
+          for (const s of def.steps) {
+            if (!shown.has(s.id)) lines.push(`  [pending] ${s.id}`);
+          }
+          if (def.aggregate && !shown.has(def.aggregate.id)) {
+            lines.push(`  [pending] ${def.aggregate.id}`);
+          }
         }
-      }
-
-      // Verbose: task list
-      if (args.verbose) {
-        lines.push("");
-        lines.push("Tasks:");
-        for (const t of tasks) {
-          const assignee = t.assignee
-            ? store.getMember(t.assignee)?.role ?? "?"
-            : "-";
-          lines.push(`  [${t.status}] ${t.title} (${assignee})`);
-        }
-      }
-
-      // Rate-limit usage section — opt-in via rateLimits arg so the default
-      // output stays compact. Uses the same registry/config resolution as
-      // checkRate() so the numbers line up with what members actually see
-      // when they get rate-limited. currentUsage() is non-consuming (prunes
-      // stale entries as a side effect, which is desirable here).
-      if (args.rateLimits) {
-        const limiter = rateLimiter.forTeam(team.id, team.config.rateLimit);
-        const max = limiter.maxCalls;
-        const windowSec = Math.round(limiter.windowMs / 1000);
-        lines.push("");
-        lines.push(
-          `Rate limits for "${team.name}" (${max} calls/${windowSec}s per member):`
-        );
-        for (const m of members) {
-          const used = limiter.currentUsage(m.id);
-          const pct = max > 0 ? Math.round((used / max) * 100) : 0;
-          const warn = pct >= 80 ? " ⚠" : "";
-          const role = m.role.padEnd(maxRoleLen);
-          lines.push(`  ${role}  ${used}/${max}  (${pct}%)${warn}`);
-        }
-      }
-
-      // Budget warning
-      if (team.config.budgetLimit) {
-        const pct = (teamCost / team.config.budgetLimit) * 100;
-        if (pct >= 80) {
-          lines.push(`\n⚠ Budget: ${costs.formatCost(teamCost)} / ${costs.formatCost(team.config.budgetLimit)} (${pct.toFixed(0)}%)`);
-        }
-      }
-
-      return lines.join("\n");
+        return lines.join("\n");
       } catch (err) {
         return `Error: ${err instanceof Error ? err.message : String(err)}`;
       }

@@ -1,334 +1,204 @@
-// Shared test harness for integration/e2e tests.
-// Provides a mock SDK client and helpers to wire up the full plugin
-// (Store + TeamManager + MessageBus + TaskBoard + hooks + tools)
-// so tests can drive end-to-end flows without a real opencode server.
+// Shared fake-client harness for the orch test suites.
+//
+// The Runner only needs a structural subset of the opencode SDK client
+// (RunnerClient), so the fake below records session.create / promptAsync /
+// abort / delete calls and serves canned assistant messages from
+// `session.messages`.
+// Tests drive step completion by setting an output for a session and then
+// calling `runner.onSessionIdle(sessionID)` (or `onSessionError`).
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { PluginInput } from "@opencode-ai/plugin";
-import type { Event } from "@opencode-ai/sdk";
 import { Store } from "../src/state/store.js";
-import { TeamManager } from "../src/core/team-manager.js";
-import { MessageBus } from "../src/core/message-bus.js";
-import { TaskBoard } from "../src/core/task-board.js";
-import { Scratchpad } from "../src/core/scratchpad.js";
-import { CostTracker } from "../src/core/cost-tracker.js";
-import { FileLockManager } from "../src/core/file-locks.js";
-import { EscalationManager } from "../src/core/escalation.js";
-import { ActivityTracker } from "../src/core/activity.js";
-import { TemplateRegistry } from "../src/templates/index.js";
-import { RateLimiterRegistry } from "../src/core/rate-limit.js";
-import { createTools } from "../src/tools/index.js";
-import { createEventHook } from "../src/hooks/events.js";
-import { createPermissionHook } from "../src/hooks/permissions.js";
-import { createActivityHook } from "../src/hooks/activity-tracker.js";
-import { Reporter } from "../src/core/reporter.js";
+import { Runner, type RunnerClient } from "../src/core/runner.js";
+import { WorkflowRegistry } from "../src/workflows/index.js";
+import type { Reporter } from "../src/core/reporter.js";
 
-// ── Recorded SDK calls ──────────────────────────────────────────────
-export interface RecordedCall {
-  method: string;
-  args: unknown;
-  timestamp: number;
+export interface PromptRecord {
+  sessionID: string;
+  /** Step id parsed from the session title `orch/<run-id>/<step-id>`. */
+  stepID: string;
+  title: string;
+  text: string;
+  agent?: string;
+  model?: { providerID: string; modelID: string };
 }
 
-// ── Mock SDK Client ─────────────────────────────────────────────────
-// Tracks every call so tests can assert on what the plugin sent to opencode.
-// Returns realistic shapes for methods that the plugin reads from.
-export class MockClient {
-  public calls: RecordedCall[] = [];
-  public sessions = new Map<string, { id: string; title?: string; parentID?: string }>();
-  public files = new Map<string, string>();
-  public toasts: Array<{ title?: string; message: string; variant: string }> = [];
-  public logs: Array<{ level: string; message: string }> = [];
-  public sessionCounter = 0;
+export class FakeClient {
+  prompts: PromptRecord[] = [];
+  aborts: string[] = [];
+  deletes: string[] = [];
+  /** Ordered cross-call log (`messages:<id>` / `delete:<id>`) for ordering assertions. */
+  calls: string[] = [];
+  /** When true, session.delete rejects (teardown failures must be swallowed). */
+  failDeletes = false;
+  /** Currently unanswered promptAsync calls (test-maintained). */
+  inflight = 0;
+  maxInflight = 0;
+  private sessionCounter = 0;
+  private titles = new Map<string, string>();
+  private outputs = new Map<string, { text: string; completed: boolean }>();
 
-  private record(method: string, args: unknown): void {
-    this.calls.push({ method, args, timestamp: Date.now() });
-  }
-
-  reset(): void {
-    this.calls = [];
-    this.sessions.clear();
-    this.files.clear();
-    this.toasts = [];
-    this.logs = [];
-    this.sessionCounter = 0;
-  }
-
-  callsFor(method: string): RecordedCall[] {
-    return this.calls.filter((c) => c.method === method);
-  }
-
-  registerFile(filePath: string, content: string): void {
-    this.files.set(filePath, content);
-  }
-
-  // ── Mock SDK methods ─────────────────────────────────────────
-  // Each method is an instance field (not a prototype method) so tests can
-  // monkey-patch individual endpoints per instance without affecting others.
-  session = {
-    create: async (params: { body?: { parentID?: string; title?: string } }) => {
-      this.record("session.create", params);
-      const id = `mock-session-${++this.sessionCounter}`;
-      const sess = { id, title: params.body?.title, parentID: params.body?.parentID };
-      this.sessions.set(id, sess);
-      return { data: sess };
+  session: RunnerClient["session"] = {
+    create: async ({ body }) => {
+      const id = `sess_${(++this.sessionCounter).toString(36)}`;
+      this.titles.set(id, body.title);
+      return { data: { id } };
     },
-    // `session.get` — used by revalidateMemberSessions(). Default impl resolves
-    // when the session was created via this mock; otherwise rejects (404).
-    get: async (params: { path: { id: string } }) => {
-      this.record("session.get", params);
-      const sess = this.sessions.get(params.path.id);
-      if (!sess) throw new Error(`Session not found: ${params.path.id}`);
-      return { data: sess };
+    promptAsync: async (opts) => {
+      this.inflight++;
+      if (this.inflight > this.maxInflight) this.maxInflight = this.inflight;
+      const title = this.titles.get(opts.path.id) ?? "";
+      this.prompts.push({
+        sessionID: opts.path.id,
+        stepID: title.split("/").pop() ?? "",
+        title,
+        text: opts.body.parts.map((p) => p.text).join(""),
+        agent: opts.body.agent,
+        model: opts.body.model,
+      });
+      return {};
     },
-    prompt: async (params: {
-      path: { id: string };
-      body?: { parts?: unknown[]; noReply?: boolean };
-    }) => {
-      this.record("session.prompt", params);
-      return { data: { info: { id: "msg-1" }, parts: [] } };
+    abort: async (opts) => {
+      this.aborts.push(opts.path.id);
+      return {};
     },
-    promptAsync: async (params: {
-      path: { id: string };
-      body?: { parts?: unknown[]; agent?: string; model?: unknown };
-    }) => {
-      this.record("session.promptAsync", params);
-      return { data: { info: { id: "msg-1" }, parts: [] } };
+    delete: async (opts) => {
+      this.calls.push(`delete:${opts.path.id}`);
+      this.deletes.push(opts.path.id);
+      if (this.failDeletes) throw new Error("delete failed");
+      return {};
     },
-    abort: async (params: { path: { id: string } }) => {
-      this.record("session.abort", params);
-      return { data: true };
-    },
-  };
-
-  file = {
-    read: async (params: { query: { path: string } }) => {
-      this.record("file.read", params);
-      const content = this.files.get(params.query.path) ?? "";
-      return { data: { content } };
-    },
-  };
-
-  tui = {
-    showToast: async (params: {
-      body?: { title?: string; message: string; variant: string; duration?: number };
-    }) => {
-      this.record("tui.showToast", params);
-      if (params.body) {
-        this.toasts.push({
-          title: params.body.title,
-          message: params.body.message,
-          variant: params.body.variant,
-        });
-      }
-      return { data: true };
-    },
-  };
-
-  app = {
-    log: async (params: { body?: { service: string; level: string; message: string } }) => {
-      this.record("app.log", params);
-      if (params.body) {
-        this.logs.push({ level: params.body.level, message: params.body.message });
-      }
-      return { data: true };
-    },
-  };
-
-  // Mirrors opencode's `/experimental/tool/ids` endpoint. Returns the orch_*
-  // tools the plugin actually registers plus a few common built-ins, and
-  // deliberately includes a fictional `orch_frobnicate` so tests can assert
-  // that the closed-allowlist closure in computeMemberToolsAllowed (ADR-004)
-  // explicitly denies unknown orch_* ids surfaced by the registry.
-  tool = {
-    ids: async (params?: unknown) => {
-      this.record("tool.ids", params ?? {});
+    messages: async (opts) => {
+      this.calls.push(`messages:${opts.path.id}`);
+      const out = this.outputs.get(opts.path.id);
+      if (out === undefined) return { data: [] };
       return {
         data: [
-          "read", "write", "edit", "bash", "glob", "grep",
-          "orch_create", "orch_spawn", "orch_message", "orch_broadcast",
-          "orch_tasks", "orch_memo", "orch_status", "orch_shutdown",
-          "orch_result", "orch_inbox", "orch_team", "orch_log",
-          "orch_frobnicate",
+          { info: { role: "user" }, parts: [{ type: "text", text: "prompt" }] },
+          {
+            // `time.completed` drives the worktree poll fallback.
+            info: {
+              role: "assistant",
+              ...(out.completed ? { time: { completed: Date.now() } } : {}),
+            },
+            parts: [{ type: "text", text: out.text }],
+          },
         ],
       };
     },
   };
+
+  // Reporter sinks (used by plugin.test.ts, harmless elsewhere).
+  tui = { showToast: (_params: unknown) => Promise.resolve({}) };
+  app = { log: (_params: unknown) => Promise.resolve({}) };
+
+  setOutput(sessionID: string, text: string, opts?: { completed?: boolean }): void {
+    this.outputs.set(sessionID, { text, completed: opts?.completed ?? false });
+  }
 }
 
-// ── Test harness — the full plugin wired up with a mock client ───
-export interface Harness {
-  tmpDir: string;
-  client: MockClient;
+export const noopReporter = {
+  info() {},
+  success() {},
+  warn() {},
+  error() {},
+} as unknown as Reporter;
+
+export function tmpProject(prefix = "orch-test-"): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+export function rmrf(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/** Poll a condition (5ms interval) until it holds or the timeout expires. */
+export async function waitFor(
+  cond: () => boolean,
+  what = "condition",
+  timeoutMs = 3000
+): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`waitFor timed out after ${timeoutMs}ms: ${what}`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+export interface Env {
+  projectDir: string;
   store: Store;
-  manager: TeamManager;
-  bus: MessageBus;
-  board: TaskBoard;
-  pad: Scratchpad;
-  costs: CostTracker;
-  fileLocks: FileLockManager;
-  escalation: EscalationManager;
-  activity: ActivityTracker;
-  templates: TemplateRegistry;
-  reporter: Reporter;
-  rateLimiter: RateLimiterRegistry;
-  tools: ReturnType<typeof createTools>;
-  fireEvent: (event: Event) => Promise<void>;
-  permissionHook: ReturnType<typeof createPermissionHook>;
-  activityHook: ReturnType<typeof createActivityHook>;
-  cleanup: () => void;
+  workflows: WorkflowRegistry;
+  client: FakeClient;
+  runner: Runner;
+  /** Index of the next unanswered prompt (advanced by completePrompt). */
+  cursor: number;
+  destroy: () => void;
 }
 
-export async function createHarness(): Promise<Harness> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-e2e-"));
-  const client = new MockClient();
-  const ctx = {
-    client,
-    project: { id: "test-project" },
-    directory: tmpDir,
-    worktree: tmpDir,
-    serverUrl: new URL("http://localhost:0"),
-    $: null,
-  } as unknown as PluginInput;
-
-  const store = new Store(tmpDir);
+/** Store + registry + runner wired to a FakeClient inside a temp project dir. */
+export async function makeEnv(projectDir?: string): Promise<Env> {
+  const dir = projectDir ?? tmpProject();
+  const store = new Store(dir);
   await store.init();
-
-  const manager = new TeamManager(store, ctx);
-  const bus = new MessageBus(store, manager, ctx);
-  const board = new TaskBoard(store, ctx);
-  const pad = new Scratchpad(store);
-  const costs = new CostTracker(store);
-  const fileLocks = new FileLockManager(store);
-  const escalation = new EscalationManager(store, manager, ctx);
-  const activity = new ActivityTracker();
-  const templates = new TemplateRegistry();
-  const reporter = new Reporter(client, tmpDir);
-  // Huge default cap so existing tests that hammer tools in a loop don't
-  // hit rate limits. Tests that exercise rate limiting create their own
-  // RateLimiterRegistry or use TeamConfig.rateLimit to override.
-  const rateLimiter = new RateLimiterRegistry({ windowMs: 60_000, maxCalls: 100_000 });
-
-  const tools = createTools({
-    manager,
-    bus,
-    board,
-    pad,
-    costs,
-    activity,
+  const workflows = new WorkflowRegistry();
+  workflows.loadCustom(dir);
+  const client = new FakeClient();
+  const runner = new Runner({
     store,
-    templates,
-    rateLimiter,
-  });
-
-  const eventHook = createEventHook({
-    store,
-    manager,
-    bus,
-    board,
-    costs,
-    fileLocks,
-    escalation,
-    ctx,
-    reporter,
-  });
-
-  const permissionHook = createPermissionHook(manager, fileLocks, tmpDir);
-  const activityHook = createActivityHook(manager, activity, tmpDir);
-
-  return {
-    tmpDir,
+    workflows,
     client,
+    directory: dir,
+    reporter: noopReporter,
+  });
+  return {
+    projectDir: dir,
     store,
-    manager,
-    bus,
-    board,
-    pad,
-    costs,
-    fileLocks,
-    escalation,
-    activity,
-    templates,
-    reporter,
-    rateLimiter,
-    tools,
-    fireEvent: (event: Event) => eventHook({ event }),
-    permissionHook,
-    activityHook,
-    cleanup: () => {
+    workflows,
+    client,
+    runner,
+    cursor: 0,
+    destroy: () => {
+      runner.destroy();
       store.destroy();
-      fs.rmSync(tmpDir, { recursive: true, force: true });
     },
   };
 }
 
-// ── Helpers to invoke tools as the LLM would ────────────────────
-// Tool execution requires a ToolContext — this builds a minimal one.
-export function makeToolContext(sessionID: string, opts?: { messageID?: string; agent?: string }): {
-  sessionID: string;
-  messageID: string;
-  agent: string;
-  directory: string;
-  worktree: string;
-  abort: AbortSignal;
-  metadata: (input: { title?: string; metadata?: Record<string, unknown> }) => void;
-  ask: (input: unknown) => Promise<void>;
-} {
-  return {
-    sessionID,
-    messageID: opts?.messageID ?? "test-message",
-    agent: opts?.agent ?? "build",
-    directory: "/tmp",
-    worktree: "/tmp",
-    abort: new AbortController().signal,
-    metadata: () => {},
-    ask: async () => {},
-  };
+/**
+ * Wait for the next unanswered prompt (index `at`, default: the cursor), set
+ * the canned assistant output for its session, and fire `session.idle` at the
+ * runner. Note the first prompt may already exist by the time this is called
+ * (the runner dispatches it on microtasks during `startRun`), so the cursor —
+ * not `prompts.length` — decides which prompt to answer.
+ */
+export async function completePrompt(
+  env: Env,
+  output: string,
+  at?: number
+): Promise<PromptRecord> {
+  const idx = at ?? env.cursor;
+  await waitFor(
+    () => env.client.prompts.length > idx,
+    `prompt #${idx + 1} to be sent`
+  );
+  env.cursor = idx + 1;
+  const rec = env.client.prompts[idx];
+  env.client.inflight--;
+  env.client.setOutput(rec.sessionID, output);
+  await env.runner.onSessionIdle(rec.sessionID);
+  return rec;
 }
 
-// ── Event factories ─────────────────────────────────────────────
-export function sessionIdleEvent(sessionID: string): Event {
-  return {
-    type: "session.idle",
-    properties: { sessionID },
-  } as Event;
-}
-
-export function sessionStatusEvent(sessionID: string, status: "idle" | "busy" | "retry"): Event {
-  return {
-    type: "session.status",
-    properties: {
-      sessionID,
-      status: status === "retry"
-        ? { type: "retry", attempt: 1, message: "retrying", next: 0 }
-        : { type: status },
-    },
-  } as Event;
-}
-
-export function sessionErrorEvent(sessionID: string): Event {
-  return {
-    type: "session.error",
-    properties: {
-      sessionID,
-      error: { name: "UnknownError", data: { message: "test error" } },
-    },
-  } as Event;
-}
-
-export function messageUpdatedEvent(sessionID: string, cost: number): Event {
-  return {
-    type: "message.updated",
-    properties: {
-      info: {
-        id: "msg-1",
-        sessionID,
-        role: "assistant",
-        cost,
-        tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
-      } as unknown,
-    },
-  } as Event;
+/** Wait until a run reaches a terminal status and return its record. */
+export async function waitForRun(env: Env, runID: string) {
+  await waitFor(() => {
+    const s = env.store.getRun(runID)?.status;
+    return s === "completed" || s === "failed" || s === "cancelled";
+  }, `run ${runID} to finish`);
+  return env.store.getRun(runID)!;
 }

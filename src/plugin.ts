@@ -1,57 +1,53 @@
 import type { PluginInput, PluginOptions, Hooks } from "@opencode-ai/plugin";
 import { Store } from "./state/store.js";
-import { TeamManager } from "./core/team-manager.js";
-import { MessageBus } from "./core/message-bus.js";
-import { TaskBoard } from "./core/task-board.js";
-import { Scratchpad } from "./core/scratchpad.js";
-import { CostTracker } from "./core/cost-tracker.js";
-import { FileLockManager } from "./core/file-locks.js";
-import { EscalationManager } from "./core/escalation.js";
-import { ActivityTracker } from "./core/activity.js";
-import { TemplateRegistry } from "./templates/index.js";
+import { Runner, type RunnerClient } from "./core/runner.js";
+import { WorkflowRegistry } from "./workflows/index.js";
 import { createTools } from "./tools/index.js";
 import { createEventHook } from "./hooks/events.js";
 import { createPermissionHook } from "./hooks/permissions.js";
-import { createActivityHook, createActivityBeforeHook } from "./hooks/activity-tracker.js";
 import { Reporter } from "./core/reporter.js";
-import { revalidateMemberSessions } from "./core/revalidate.js";
-import { RateLimiterRegistry } from "./core/rate-limit.js";
-import { IdleMonitor } from "./core/idle-monitor.js";
-import { WhipMonitor } from "./core/whip-monitor.js";
 
 const INIT_TIMEOUT_MS = 5000;
 
-function parsePositiveInt(v: string | undefined, fallback: number): number {
-  if (!v) return fallback;
-  // Strict parse: Number("60abc") is NaN, unlike parseInt which would
-  // lenient-parse it to 60. We want env vars to be either a clean
-  // positive integer or a clear fallback, not silently truncated.
-  const n = Number(v);
-  return Number.isInteger(n) && n > 0 ? n : fallback;
-}
-
-export function parseRateLimitEnv(env: NodeJS.ProcessEnv = process.env): {
-  windowMs: number;
-  maxCalls: number;
-} {
-  return {
-    windowMs: parsePositiveInt(env.ORCH_RATE_LIMIT_WINDOW_MS, 60_000),
-    maxCalls: parsePositiveInt(env.ORCH_RATE_LIMIT_MAX_CALLS, 60),
-  };
-}
-
 export async function plugin(
   input: PluginInput,
-  _options?: PluginOptions
+  options?: PluginOptions
 ): Promise<Hooks> {
+  // Dormant inside runner-managed worktrees: a worktree's own opencode
+  // instance also loads this plugin (the project's opencode.json registers
+  // it), but there it is useless and noisy — its Store would write into the
+  // worktree and crash with ENOENT once the runner removes it. The lead
+  // instance drives worktree sessions via the API, so they need nothing
+  // from us: no store, no tools, no hooks.
+  if (input.directory.split(/[\\/]/).includes(".orch-worktrees")) {
+    return {};
+  }
+
   // Reporter is the FIRST thing constructed — if anything else fails, we can
   // still surface the error to the user via TUI toast + app.log + file log.
   const reporter = new Reporter(input.client, input.directory);
 
-  let initPromise: Promise<{ hooks: Hooks; store: Store }> | null = null;
+  // Plugin option `stepPermissions`: "auto" (default) or "ask". "ask"
+  // disables the step-session auto-allow, exactly like the
+  // ORCH_STEP_PERMISSIONS=ask env var (either one wins). Unknown values
+  // warn and fall back to "auto".
+  let stepPermissions: "auto" | "ask" = "auto";
+  const rawStepPermissions: unknown = options?.stepPermissions;
+  if (rawStepPermissions !== undefined) {
+    if (rawStepPermissions === "auto" || rawStepPermissions === "ask") {
+      stepPermissions = rawStepPermissions;
+    } else {
+      reporter.warn(
+        "[orch]",
+        `unknown stepPermissions value ${JSON.stringify(rawStepPermissions)} — falling back to "auto"`
+      );
+    }
+  }
+
+  let initPromise: Promise<{ hooks: Hooks; cleanup: () => void }> | null = null;
 
   try {
-    initPromise = doInit(input, reporter);
+    initPromise = doInit(input, reporter, stepPermissions);
     const { hooks } = await Promise.race([
       initPromise,
       new Promise<never>((_, reject) =>
@@ -65,11 +61,11 @@ export async function plugin(
   } catch (err) {
     reporter.error("[orch] init failed", err);
     // If init eventually completes after the timeout, tear down the resources
-    // it created (snapshot timer, signal handlers) so they don't leak for the
+    // it created (snapshot timer, step timers) so they don't leak for the
     // lifetime of the process.
     if (initPromise) {
       initPromise
-        .then(({ store }) => store.destroy())
+        .then(({ cleanup }) => cleanup())
         .catch(() => {});
     }
     // Return empty hooks so opencode keeps working without our tools.
@@ -79,93 +75,49 @@ export async function plugin(
 
 async function doInit(
   input: PluginInput,
-  reporter: Reporter
-): Promise<{ hooks: Hooks; store: Store }> {
-  // ── Initialize state store ──────────────────────────────────────
+  reporter: Reporter,
+  stepPermissions: "auto" | "ask"
+): Promise<{ hooks: Hooks; cleanup: () => void }> {
+  // ── State store (replay marks interrupted runs failed) ────────────
   const store = new Store(input.directory);
   await store.init();
 
-  // ── Core modules ────────────────────────────────────────────────
-  const manager = new TeamManager(store, input);
-  const bus = new MessageBus(store, manager, input);
-  const board = new TaskBoard(store, input);
-  const pad = new Scratchpad(store);
-  const costs = new CostTracker(store);
-  const fileLocks = new FileLockManager(store);
-  const escalation = new EscalationManager(store, manager, input);
-  const activity = new ActivityTracker();
+  // ── Workflow definitions (built-ins + custom) ─────────────────────
+  const workflows = new WorkflowRegistry();
+  workflows.loadCustom(input.directory);
+  for (const err of workflows.errors) {
+    reporter.warn("[orch]", `workflow load: ${err}`);
+  }
 
-  // ── Rate limiter ────────────────────────────────────────────────
-  // Default: 60 orch_* tool calls per 60-second sliding window per member.
-  // Overrideable globally via ORCH_RATE_LIMIT_WINDOW_MS /
-  // ORCH_RATE_LIMIT_MAX_CALLS env vars, or per-team via TeamConfig.rateLimit.
-  // Lead sessions are exempt.
-  const rateLimiter = new RateLimiterRegistry(parseRateLimitEnv());
+  // ── Runner ────────────────────────────────────────────────────────
+  const runner = new Runner({
+    store,
+    workflows,
+    client: input.client as unknown as RunnerClient,
+    directory: input.directory,
+    reporter,
+  });
+  // Kill zombie step sessions from runs a previous process left `running`.
+  runner.sweepInterruptedSessions();
 
-  // ── Idle monitor ────────────────────────────────────────────────
-  // Periodically flags `ready` members whose lastActivityAt is older than
-  // the team's idleTimeoutMs (default 10 min). Warning-only — no
-  // auto-shutdown. The timer is unref'd so it never blocks process exit.
-  const idleMonitor = new IdleMonitor(store, reporter);
-  idleMonitor.start();
+  const cleanup = () => {
+    runner.destroy();
+    store.destroy();
+  };
 
-  // ── Whip monitor ────────────────────────────────────────────────
-  // Injects the shared /whip prompt into a lead session after ~15 min of
-  // user-input silence. Shares whip-prompt.md with the Claude Code harness
-  // so both behave identically. Graceful no-op when the prompt file is
-  // missing.
-  const whipMonitor = new WhipMonitor(input.client, reporter, { directory: input.directory });
-
-  // ── Session revalidation ────────────────────────────────────────
-  // Members recovered from snapshot/JSONL may reference opencode sessions
-  // that no longer exist. Walk them now and force-shutdown the dead ones
-  // so we don't try to wake zombies on the next idle event.
-  await revalidateMemberSessions(store, fileLocks, input, reporter);
-
-  // ── Templates ───────────────────────────────────────────────────
-  const templates = new TemplateRegistry();
-  await templates.loadCustomTemplates(input.directory);
-
-  // ── Build hooks ─────────────────────────────────────────────────
+  // ── Build hooks ───────────────────────────────────────────────────
   const hooks: Hooks = {
-    tool: createTools({
-      manager,
-      bus,
-      board,
-      pad,
-      costs,
-      activity,
-      store,
-      templates,
-      rateLimiter,
+    tool: createTools({ runner, store, workflows }),
+    event: createEventHook({ runner, directory: input.directory }),
+    "permission.ask": createPermissionHook({
+      runner,
+      directory: input.directory,
+      stepPermissions,
     }),
-
-    event: createEventHook({
-      store,
-      manager,
-      bus,
-      board,
-      costs,
-      fileLocks,
-      escalation,
-      ctx: input,
-      reporter,
-      whipMonitor,
-    }),
-
-    "permission.ask": createPermissionHook(manager, fileLocks, input.directory),
-
-    "tool.execute.before": createActivityBeforeHook(manager, input.directory),
-
-    "tool.execute.after": createActivityHook(manager, activity, input.directory),
+    dispose: async () => cleanup(),
   };
 
   // Graceful shutdown — flush state on process exit
-  const cleanup = () => {
-    idleMonitor.stop();
-    whipMonitor.stop();
-    store.destroy();
-  };
   process.on("beforeExit", cleanup);
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
@@ -173,5 +125,5 @@ async function doInit(
   const toolCount = Object.keys(hooks.tool ?? {}).length;
   reporter.success("[orch]", `ready · ${toolCount} tools`);
 
-  return { hooks, store };
+  return { hooks, cleanup };
 }

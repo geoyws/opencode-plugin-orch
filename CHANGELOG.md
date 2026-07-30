@@ -94,6 +94,130 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   because they resolve regardless of the routed project. Adds
   `tests/directory-routing.test.ts` as a regression fence
 
+## [0.3.0] - 2026-07-28
+
+Worktree isolation for parallel workers, shell steps and programmatic
+gates, adversarial review, and autonomous step-session permissions. See
+[ADR-007](docs/adr/ADR-007-worktree-isolation-and-autonomy.md) and
+[docs/spec-v0.3-addendum.md](docs/spec-v0.3-addendum.md).
+
+### Added
+- feat: worktree isolation — `isolation: "worktree"` on a workflow def or
+  run config (run config wins) runs parallel/orchestrator fan-out steps in
+  per-step git worktrees at
+  `<project-parent>/.orch-worktrees/<project>/<run-id>/<step-id>`, copies
+  changes back on success (last-finisher-wins, conflicts recorded in step
+  metadata), and falls back to the main directory with
+  `isolationFallback: true` when `git worktree add` fails. Worktree
+  sessions use a 2s `session.messages` poll fallback for completion
+  detection since cross-instance events aren't guaranteed
+- feat: shell steps — a step may set `command` instead of `instructions`
+  to run a shell command (`/bin/sh -c` in the project dir or the step's
+  worktree, shares `stepTimeoutMs`, combined stdout+stderr is the step
+  output, non-zero exit fails the step, no LLM session)
+- feat: programmatic gates — evaluator workflows may set
+  `gate: { command }`; the gate runs in the project dir after each
+  generator iteration and exit 0 ends the loop, with the last ~4000 chars
+  of failing output fed back as `{{feedback}}`. Run config `gateCommand`
+  overrides the workflow's gate at run time
+- feat: three new built-ins (now 8 total) — `adversarial-review`
+  (evaluator; adversarial critic attacks the deliverable until it finds
+  nothing, max 4 iterations), `author-tests` (orchestrator with
+  `isolation: "worktree"`; planner splits disjoint test-authoring areas
+  across workers), `test-fix-loop` (gate-only evaluator, default gate
+  `npm test`, max 5 iterations)
+- feat: run config `stepModels` — per-step model override; resolution
+  `stepModels[step.id] ?? step.model ?? config.model ?? server default`
+- feat: run config `maxStepOutputChars` (default 50000, min 1000) — caps
+  step-output text injected into subsequent prompts with a
+  `\n[... truncated N chars]` marker; full outputs stay in the store
+- feat: autonomous step-session permissions — the `permission.ask` hook
+  auto-allows runner-tracked step sessions except git-mutating bash
+  commands (`commit` / `push` / `merge` / `rebase` / `reset --hard` /
+  `clean` / `stash` / `cherry-pick` / `revert` / `branch -d/-D/-m/-M` /
+  `tag -d` / `checkout` / `switch` / `restore` / `worktree remove`), which
+  are denied. Non-step sessions are untouched; `ORCH_STEP_PERMISSIONS=ask`
+  disables the auto-allow
+- feat: session teardown — ephemeral step sessions are deleted
+  (`session.delete`, best-effort) when their step settles (success, failure,
+  cancel, timeout, `session.error`), after the output was extracted. Runs
+  left `running` across a restart get their orphaned step sessions aborted
+  and deleted on plugin init. Run config `keepSessions: true` (default
+  false) opts out of deletion for debugging
+- feat: run config `stepRetries` (int 0–3, default 1) — retries an LLM
+  step when its session fails with a transient error (rate limit / 429 /
+  overload / network / 502–504 class), with 5s backoff and a fresh session
+  per attempt. Command steps, gates, timeouts, cancels, and non-transient
+  errors are never retried; after exhaustion the failure message reads
+  "…after N attempts". Step records gain `attempts`
+- feat: `stepPermissions` plugin option — the opencode.json plugin entry
+  accepts tuple form
+  `["../../work/src/opencode-plugin-orch", { "stepPermissions": "ask" }]`.
+  `"ask"` disables the step-session auto-allow (same effect as
+  `ORCH_STEP_PERMISSIONS=ask`; either one disables), `"auto"` (default)
+  keeps the current behavior, unknown values warn and fall back to auto
+
+### Changed
+- refactor: evaluator critic step (`steps[1]`) is now optional when a
+  `gate` is configured — gate-only evaluators are valid
+- feat: `step_completed` step records gain optional `copiedFiles`,
+  `conflicts`, and `isolationFallback` fields
+
+## [0.2.0] - 2026-07-28
+
+Breaking redesign: orch stops being a "team of persistent members" plugin and
+becomes a workflow engine implementing the patterns from Anthropic's
+"Building effective agents" essay. See
+[ADR-006](docs/adr/ADR-006-workflows-redesign.md) and
+[docs/workflow-spec.md](docs/workflow-spec.md).
+
+### Added
+- feat: workflow engine — a run executes a workflow definition as a set of
+  ephemeral opencode sessions (one per step invocation), driven by the
+  `session.idle` / `session.error` event hook. Five built-in workflows:
+  `chain-draft-refine` (chain), `route-by-intent` (routing),
+  `parallel-review` (parallel), `orchestrate-tasks` (orchestrator-workers),
+  `evaluator-loop` (evaluator-optimizer)
+- feat: custom workflow definitions as JSON in `.opencode/workflows/*.json`,
+  validated by the same Zod schema as the built-ins; prompt templates support
+  `{{input}}`, `{{output}}`, `{{steps.<id>.output}}`, `{{feedback}}`
+- feat: four new tools — `orch_run` (start a run, optional JSON `config`
+  override: model / maxIterations / concurrency), `orch_workflows` (list /
+  info definitions), `orch_runs` (list runs newest-first), `orch_cancel`
+  (abort in-flight step sessions, replaces `orch_shutdown`)
+- feat: event-sourced run store — new event types (`run_created`,
+  `step_started`, `step_completed`, `step_failed`, `run_completed`,
+  `run_failed`, `run_cancelled`) over the existing JSONL + atomic snapshot +
+  replay design. On plugin init, runs left `running` are marked failed
+  ("plugin restarted"); runs are not resumed across restarts in 0.2.0
+
+### Changed
+- refactor: `orch_status` and `orch_result` keep their names and run-id
+  prefix matching but now report on workflow runs instead of teams
+- chore: bump `@opencode-ai/plugin` and `@opencode-ai/sdk` to ^1.18.7
+- chore: package cleanup — remove `bin` (no more CLI/tmux/Discord), remove
+  `peerDependencies`/`peerDependenciesMeta` (@opentui unused); description
+  now reflects the workflow engine
+
+### Removed
+- refactor!: the entire team-orchestration model — persistent members,
+  message bus, task board, file locks, scratchpad, cost tracker, escalation
+  chains, activity tracking, session revalidation, rate limiting, idle/whip
+  monitors, Discord notifier, and the `orch` CLI
+- refactor!: nine team tools — `orch_create`, `orch_spawn`, `orch_message`,
+  `orch_broadcast`, `orch_tasks`, `orch_memo`, `orch_shutdown`,
+  `orch_inbox`, `orch_team`. Tool surface drops from 12 to 7
+- refactor!: built-in team templates (`code-review`, `feature-build`,
+  `debug-squad`) and the custom-template loader
+- docs: ADR-002 (lead visibility), ADR-004 (member tool scoping), ADR-005
+  (rate limiting) — superseded by the redesign, deleted with their evidence
+  logs
+
+### Kept
+- `orch_log` tool (unchanged), the hardened plugin init (5s timeout +
+  multi-sink Reporter + wrapped hooks/tools), and the `./server` entrypoint
+  exports subpath (ADR-003)
+
 ## [0.1.1] - 2026-04-13
 
 ### Added
@@ -163,6 +287,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - test: 258 unit tests across core, communication, hooks, and templates
   (186db70)
 
-[Unreleased]: https://github.com/geoyws/opencode-plugin-orch/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/geoyws/opencode-plugin-orch/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/geoyws/opencode-plugin-orch/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/geoyws/opencode-plugin-orch/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/geoyws/opencode-plugin-orch/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/geoyws/opencode-plugin-orch/releases/tag/v0.1.0

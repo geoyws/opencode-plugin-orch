@@ -1,0 +1,7 @@
+# msgpackr-extract is a transitive optional native accelerator (via
+# @opencode-ai/sdk → msgpackr). Its build is explicitly disallowed — the JS
+# fallback is used. strictDepBuilds is off so this reviewed decision doesn't
+# hard-fail installs on pnpm 11.
+strictDepBuilds: false
+allowBuilds:
+  msgpackr-extract: false

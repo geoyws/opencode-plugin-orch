@@ -1,30 +1,30 @@
 import type { Permission } from "@opencode-ai/sdk";
-import type { TeamManager } from "../core/team-manager.js";
-import type { FileLockManager } from "../core/file-locks.js";
+import type { Runner } from "../core/runner.js";
 import { logHookError } from "./_safe.js";
 
-// Git commands that mutate repository state — DENIED for members
+// Git commands that mutate repository state — DENIED for step sessions
+// (only the lead commits). Matcher resurrected from the pre-0.2.0
+// permissions hook, aligned with the 0.3.0 addendum's list.
 const GIT_MUTATING_PATTERNS = [
   /\bgit\s+commit\b/,
   /\bgit\s+push\b/,
-  /\bgit\s+pull\b/,
   /\bgit\s+merge\b/,
   /\bgit\s+rebase\b/,
-  /\bgit\s+checkout\b/,
-  /\bgit\s+switch\b/,
-  /\bgit\s+restore\b/,
-  /\bgit\s+reset\b/,
+  /\bgit\s+reset\s+--hard\b/,
   /\bgit\s+clean\b/,
   /\bgit\s+stash\b/,
   /\bgit\s+cherry-pick\b/,
   /\bgit\s+revert\b/,
-  /\bgit\s+am\b/,
-  /\bgit\s+apply\b/,
   /\bgit\s+branch\s+-(d|D|m|M)\b/,
   /\bgit\s+tag\s+-d\b/,
+  /\bgit\s+checkout\b/,
+  /\bgit\s+switch\b/,
+  /\bgit\s+restore\b/,
+  /\bgit\s+worktree\s+remove\b/,
 ];
 
-// Git commands that are read-only — ALLOWED
+// Git commands that are read-only — never denied even if a mutating
+// pattern would (accidentally) match.
 const GIT_READONLY_PATTERNS = [
   /\bgit\s+status\b/,
   /\bgit\s+log\b/,
@@ -39,33 +39,32 @@ const GIT_READONLY_PATTERNS = [
   /\bgit\s+rev-parse\b/,
 ];
 
-function isGitMutating(command: string): boolean {
-  // First check if it's a known read-only command
+export function isGitMutating(command: string): boolean {
   if (GIT_READONLY_PATTERNS.some((p) => p.test(command))) return false;
-  // Then check if it matches any mutating pattern
   return GIT_MUTATING_PATTERNS.some((p) => p.test(command));
 }
 
-export function createPermissionHook(
-  manager: TeamManager,
-  fileLocks: FileLockManager,
-  projectDir: string
-) {
+// Auto-permissions for runner-tracked step sessions: allow everything
+// except git-mutating bash commands (denied). Sessions the runner is not
+// tracking are left completely untouched (output not set at all). Escape
+// hatches (either one wins): ORCH_STEP_PERMISSIONS=ask env var, or the
+// `stepPermissions: "ask"` plugin option. Wrapped so a throw can never
+// propagate into opencode.
+export function createPermissionHook(deps: {
+  runner: Runner;
+  directory: string;
+  stepPermissions?: "auto" | "ask";
+}) {
+  const { runner, directory, stepPermissions = "auto" } = deps;
+
   return async (
     input: Permission,
     output: { status: "ask" | "deny" | "allow" }
   ): Promise<void> => {
     try {
-      const sessionID = input.sessionID;
+      if (process.env.ORCH_STEP_PERMISSIONS === "ask" || stepPermissions === "ask") return;
+      if (!runner.isStepSession(input.sessionID)) return;
 
-      // Only enforce for member sessions
-      if (!manager.isMemberSession(sessionID)) return;
-
-      const member = manager.getMemberBySession(sessionID);
-      if (!member) return;
-
-      // ── Git safety ────────────────────────────────────────────────
-      // Check if this is a bash/shell permission with a git-mutating command
       const command =
         (input.metadata?.command as string) ??
         (input.metadata?.bash as string) ??
@@ -73,31 +72,11 @@ export function createPermissionHook(
         input.title ??
         "";
 
-      if (isGitMutating(command)) {
-        output.status = "deny";
-        return;
-      }
-
-      // ── File lock enforcement ─────────────────────────────────────
-      // Check write/edit tool calls for file conflicts
-      if (input.type === "write" || input.type === "edit") {
-        const filePath =
-          (input.metadata?.path as string) ??
-          (typeof input.pattern === "string" ? input.pattern : input.pattern?.[0]);
-
-        if (filePath) {
-          const result = fileLocks.tryAcquire(filePath, member.id, member.teamID);
-          if (!result.ok) {
-            output.status = "deny";
-            return;
-          }
-        }
-      }
+      output.status = isGitMutating(command) ? "deny" : "allow";
     } catch (err) {
-      // Never crash the host. Leave output.status alone — the default is
-      // "ask", which is the safest fallback: never silently allow a denied
-      // operation, never block legitimate ones either.
-      logHookError(projectDir, "permission.ask", err);
+      // Never crash the host. Leaving output.status alone falls back to
+      // "ask" — the safest default.
+      logHookError(directory, "permission.ask", err);
     }
   };
 }

@@ -74,11 +74,11 @@ Before committing a plugin-loader change or anything that touches
 
 ```bash
 opencode run --model minimax-coding-plan/MiniMax-M2.7-highspeed \
-  "Call orch_create with name='smoke' and return the team id"
+  "Call orch_workflows with action='list' and report the workflow names"
 ```
 
 Check the latest log under `~/.local/share/opencode/log/` for
-`[orch] ready · N tools` — that confirms the plugin loaded and all tools
+`[orch] ready · 7 tools` — that confirms the plugin loaded and all tools
 registered. If it's missing, the plugin silently failed to import; look
 for a `plugin has no server entrypoint` WARN on the same line.
 

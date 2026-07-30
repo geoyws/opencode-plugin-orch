@@ -1,25 +1,5 @@
 import { z } from "zod";
 
-// ── Member state machine ──────────────────────────────────────────────
-export const MemberState = z.enum([
-  "initializing",
-  "ready",
-  "busy",
-  "shutdown_requested",
-  "shutdown",
-  "error",
-]);
-export type MemberState = z.infer<typeof MemberState>;
-
-// ── Task status ───────────────────────────────────────────────────────
-export const TaskStatus = z.enum([
-  "available",
-  "claimed",
-  "completed",
-  "failed",
-]);
-export type TaskStatus = z.infer<typeof TaskStatus>;
-
 // ── Model reference ───────────────────────────────────────────────────
 export const ModelRef = z.object({
   providerID: z.string(),
@@ -27,142 +7,96 @@ export const ModelRef = z.object({
 });
 export type ModelRef = z.infer<typeof ModelRef>;
 
-// ── Escalation config ─────────────────────────────────────────────────
-export const EscalationConfig = z.object({
-  enabled: z.boolean(),
-  chain: z.array(ModelRef),
-  maxRetries: z.number().int().min(0),
-});
-export type EscalationConfig = z.infer<typeof EscalationConfig>;
+// ── Workflow pattern ──────────────────────────────────────────────────
+export const Pattern = z.enum([
+  "chain",
+  "routing",
+  "parallel",
+  "orchestrator",
+  "evaluator",
+]);
+export type Pattern = z.infer<typeof Pattern>;
 
-// ── Rate limit config ─────────────────────────────────────────────────
-export const RateLimitConfig = z.object({
-  windowMs: z.number().int().min(1).default(60_000),
-  maxCalls: z.number().int().min(1).default(60),
-});
-export type RateLimitConfig = z.infer<typeof RateLimitConfig>;
+// ── Run / step status ─────────────────────────────────────────────────
+export const RunStatus = z.enum(["running", "completed", "failed", "cancelled"]);
+export type RunStatus = z.infer<typeof RunStatus>;
 
-// ── Team config ───────────────────────────────────────────────────────
-export const TeamConfig = z.object({
-  workStealing: z.boolean().default(true),
-  backpressureLimit: z.number().int().min(1).default(50),
-  budgetLimit: z.number().optional(),
-  escalation: EscalationConfig.optional(),
-  rateLimit: RateLimitConfig.optional(),
-  // Members in `ready` state with no activity for longer than this are
-  // flagged by the idle monitor (warning toast only, no auto-shutdown).
-  idleTimeoutMs: z.number().int().min(1000).optional(),
-});
-export type TeamConfig = z.infer<typeof TeamConfig>;
+export const StepStatus = z.enum(["running", "completed", "failed", "cancelled"]);
+export type StepStatus = z.infer<typeof StepStatus>;
 
-// ── Team ──────────────────────────────────────────────────────────────
-export const Team = z.object({
-  id: z.string(),
-  name: z.string(),
-  leadSessionID: z.string(),
-  config: TeamConfig,
-  createdAt: z.number(),
-  // Lead's orch_inbox read cursor. Peer messages with createdAt greater than
-  // this are unread. Defaults to 0 so teams stored before this field existed
-  // still load — loadSnapshot bypasses Zod, so the default applies only to
-  // new Team() paths; tool code must still tolerate undefined.
-  leadInboxLastSeenAt: z.number().default(0),
-});
-export type Team = z.infer<typeof Team>;
-
-// ── Member ────────────────────────────────────────────────────────────
-export const Member = z.object({
-  id: z.string(),
-  teamID: z.string(),
-  sessionID: z.string(),
-  role: z.string(),
-  agent: z.string().optional(),
+// ── Resolved per-run configuration ────────────────────────────────────
+export const RunConfig = z.object({
   model: ModelRef.optional(),
-  state: MemberState,
-  instructions: z.string(),
-  files: z.array(z.string()).default([]),
-  escalationLevel: z.number().int().default(0),
-  retryCount: z.number().int().default(0),
-  createdAt: z.number(),
-  // Per-member tool allowlist passed to session.promptAsync as `body.tools`.
-  // undefined = no restriction (backwards-compat for members stored before
-  // this field existed). Populated by spawnMember via
-  // computeMemberToolsAllowed() — MEMBER_TOOL_DEFAULTS merged with the
-  // optional toolsAllowed arg.
-  toolsAllowed: z.record(z.string(), z.boolean()).optional(),
-  // Unix ms of the last activity update (ready/busy transition or explicit
-  // touchMember). The idle monitor flags members whose ready-state age
-  // exceeds TeamConfig.idleTimeoutMs. Default 0 so members stored before
-  // this field existed still load (store bypasses Zod for snapshot loads).
-  lastActivityAt: z.number().default(0),
+  maxIterations: z.number().int().min(1).default(3),
+  concurrency: z.number().int().min(1).default(4),
+  stepTimeoutMs: z.number().int().min(1).default(600_000),
+  // Run parallel/orchestrator fan-out steps in per-step git worktrees.
+  isolation: z.enum(["worktree"]).optional(),
+  // Evaluator gate: shell command run in the project dir after each
+  // generator iteration; exit 0 = pass.
+  gateCommand: z.string().min(1).optional(),
+  // Per-step model override: stepModels[step.id] ?? step.model ?? model.
+  stepModels: z.record(z.string(), ModelRef).optional(),
+  // Cap on step-output text injected into subsequent prompts (full outputs
+  // stay in the store). Gate feedback is separately capped at 4000 chars.
+  maxStepOutputChars: z.number().int().min(1000).default(50_000),
+  // Keep ephemeral step sessions after their step settles (debugging).
+  // Default false: sessions are deleted on settle.
+  keepSessions: z.boolean().default(false),
+  // Max retries per LLM step for transient provider errors (session.error
+  // matching the transient classifier). 0 disables retries.
+  stepRetries: z.number().int().min(0).max(3).default(1),
 });
-export type Member = z.infer<typeof Member>;
+export type RunConfig = z.infer<typeof RunConfig>;
 
-// ── Task ──────────────────────────────────────────────────────────────
-export const Task = z.object({
+// ── Step state (one record per step invocation) ───────────────────────
+export const StepState = z.object({
   id: z.string(),
-  teamID: z.string(),
-  title: z.string(),
-  description: z.string(),
-  status: TaskStatus,
-  assignee: z.string().optional(),
-  dependsOn: z.array(z.string()).default([]),
-  result: z.string().optional(),
-  tags: z.array(z.string()).default([]),
-  priority: z.number().int().default(0),
-  version: z.number().int().default(0),
+  status: StepStatus,
+  sessionID: z.string().optional(),
+  output: z.string().optional(),
+  error: z.string().optional(),
+  startedAt: z.number().optional(),
+  completedAt: z.number().optional(),
+  // Worktree isolation bookkeeping (parallel/orchestrator fan-out steps).
+  copiedFiles: z.array(z.string()).optional(),
+  conflicts: z.array(z.string()).optional(),
+  // Symlinks found in the worktree at copy-back time — skipped, not copied
+  // (they can dangle into the removed worktree or escape the repo).
+  skippedSymlinks: z.array(z.string()).optional(),
+  // Set when worktree creation failed and the step ran in the main directory.
+  isolationFallback: z.boolean().optional(),
+  // LLM step attempt counter (present only once a transient-error retry
+  // re-started the step; rides the step_started event).
+  attempts: z.number().int().min(1).optional(),
+});
+export type StepState = z.infer<typeof StepState>;
+
+// ── Run ───────────────────────────────────────────────────────────────
+export const Run = z.object({
+  id: z.string(),
+  workflow: z.string(),
+  pattern: Pattern,
+  input: z.string(),
+  status: RunStatus,
+  config: RunConfig,
+  // Steps appear when they start (keyed by step id, insertion-ordered).
+  // Evaluator iterations beyond the first use "<step-id>#<n>" ids.
+  steps: z.record(z.string(), StepState).default({}),
+  // Evaluator pattern: current loop iteration (1-based). 0 for other patterns.
+  iteration: z.number().int().default(0),
+  output: z.string().optional(),
+  error: z.string().optional(),
+  // Set when the run completed but with a caveat (evaluator budget exhausted).
+  note: z.string().optional(),
   createdAt: z.number(),
   completedAt: z.number().optional(),
 });
-export type Task = z.infer<typeof Task>;
-
-// ── Message (inter-member) ────────────────────────────────────────────
-export const TeamMessage = z.object({
-  id: z.string(),
-  teamID: z.string(),
-  from: z.string(),
-  to: z.string(),
-  content: z.string(),
-  delivered: z.boolean().default(false),
-  createdAt: z.number(),
-});
-export type TeamMessage = z.infer<typeof TeamMessage>;
-
-// ── Cost entry ────────────────────────────────────────────────────────
-export const CostEntry = z.object({
-  memberID: z.string(),
-  teamID: z.string(),
-  sessionID: z.string(),
-  cost: z.number(),
-  tokens: z.object({
-    input: z.number(),
-    output: z.number(),
-    reasoning: z.number(),
-    cache: z.object({ read: z.number(), write: z.number() }),
-  }),
-  timestamp: z.number(),
-});
-export type CostEntry = z.infer<typeof CostEntry>;
-
-// ── File lock ─────────────────────────────────────────────────────────
-export const FileLock = z.object({
-  path: z.string(),
-  memberID: z.string(),
-  teamID: z.string(),
-  acquiredAt: z.number(),
-});
-export type FileLock = z.infer<typeof FileLock>;
-
-// ── Activity entry ────────────────────────────────────────────────────
-export const Activity = z.object({
-  memberID: z.string(),
-  tool: z.string(),
-  target: z.string(),
-  timestamp: z.number(),
-});
-export type Activity = z.infer<typeof Activity>;
+export type Run = z.infer<typeof Run>;
 
 // ── JSONL event wrapper ───────────────────────────────────────────────
+// Event types: run_created, step_started, step_completed, step_failed,
+// run_completed, run_failed, run_cancelled.
 export const StoreEvent = z.object({
   type: z.string(),
   timestamp: z.number(),
@@ -173,12 +107,6 @@ export type StoreEvent = z.infer<typeof StoreEvent>;
 // ── Snapshot ──────────────────────────────────────────────────────────
 export const Snapshot = z.object({
   timestamp: z.number(),
-  teams: z.record(z.string(), Team),
-  members: z.record(z.string(), Member),
-  tasks: z.record(z.string(), Task),
-  messages: z.array(TeamMessage),
-  costs: z.array(CostEntry),
-  locks: z.record(z.string(), FileLock),
-  scratchpads: z.record(z.string(), z.record(z.string(), z.string())),
+  runs: z.record(z.string(), Run),
 });
 export type Snapshot = z.infer<typeof Snapshot>;

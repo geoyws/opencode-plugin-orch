@@ -1,7 +1,7 @@
 {
   "name": "opencode-plugin-orch",
-  "version": "0.1.1",
-  "description": "Agent team orchestration plugin for OpenCode — spawn parallel AI teammates, coordinate via message passing, manage shared task boards",
+  "version": "0.3.0",
+  "description": "Workflow engine plugin for OpenCode — Anthropic-style agentic workflows (chain, routing, parallel, orchestrator-workers, evaluator-optimizer)",
   "type": "module",
   "license": "MIT",
   "exports": {
@@ -19,23 +19,20 @@
     "build": "tsc",
     "prepare": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "test:e2e": "bun test tests/e2e.test.ts",
+    "test:e2e:live": "ORCH_LIVE=1 bun test tests/e2e-live.test.ts"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.3.17",
-    "@opencode-ai/sdk": "^1.3.17",
+    "@opencode-ai/plugin": "^1.18.7",
+    "@opencode-ai/sdk": "^1.18.7",
     "zod": "^4.1.8"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",
     "typescript": "^5.8.2"
   },
-  "peerDependencies": {
-    "@opentui/core": ">=0.1.96",
-    "@opentui/solid": ">=0.1.96"
-  },
-  "peerDependenciesMeta": {
-    "@opentui/core": { "optional": true },
-    "@opentui/solid": { "optional": true }
+  "pnpm": {
+    "ignoredBuiltDependencies": ["msgpackr-extract"]
   }
 }
