@@ -2,3 +2,19 @@ node_modules/
 dist/
 *.tsbuildinfo
 .opencode/
+
+# atmux + Claude Code operator-private state — NOT for this repo's history.
+# All of .atmux/ is excluded with no !.atmux/team.json carve-out, per
+# ADR-239 §Supplement-2026-05-26 / ADR-244 §Supersession-2026-05-26 /
+# ADR-268. Source of truth is the operator dotfile tree at
+# ~/work/journals/.sb/_dotfiles/atmux/<repo-key>/, symlinked in at .atmux/.
+# Tracking it leaks atmux topology to everyone who clones this repo.
+.atmux/*
+# Private per-operator Claude Code artifacts (todo lists, local settings,
+# team topology, worktree caches). Shared assets like .claude/skills/ and
+# CLAUDE.md stay tracked deliberately — they are team-facing, not private.
+.claude/todo/
+.claude/team.json
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
