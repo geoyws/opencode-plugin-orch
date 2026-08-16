@@ -126,7 +126,7 @@ describe("plugin()", () => {
     cleanups.push(() => hooks.dispose?.());
 
     await hooks.tool!.orch_run.execute(
-      { workflow: "chain-draft-refine", input: "hello" },
+      { workflow: "chain-draft-refine", input: "hello", background: true },
       {} as never
     );
     await waitFor(() => client.prompts.length === 1, "step session");
@@ -149,7 +149,7 @@ describe("plugin()", () => {
     expect(Object.keys(hooks.tool ?? {}).length).toBe(9); // init succeeded
 
     await hooks.tool!.orch_run.execute(
-      { workflow: "chain-draft-refine", input: "hello" },
+      { workflow: "chain-draft-refine", input: "hello", background: true },
       {} as never
     );
     await waitFor(() => client.prompts.length === 1, "step session");
@@ -168,7 +168,7 @@ describe("plugin()", () => {
     cleanups.push(() => hooks.dispose?.());
 
     const started = (await hooks.tool!.orch_run.execute(
-      { workflow: "chain-draft-refine", input: "hello" },
+      { workflow: "chain-draft-refine", input: "hello", background: true },
       {} as never
     )) as string;
     const runID = /Run (\S+) started/.exec(started)![1];
@@ -212,7 +212,7 @@ describe("plugin()", () => {
     cleanups.push(() => hooks.dispose?.());
 
     const started = (await hooks.tool!.orch_run.execute(
-      { workflow: "chain-draft-refine", input: "hello" },
+      { workflow: "chain-draft-refine", input: "hello", background: true },
       {} as never
     )) as string;
     const runID = /Run (\S+) started/.exec(started)![1];

@@ -25,6 +25,10 @@
     "build": "tsc",
     "prepare": "tsc",
     "typecheck": "tsc --noEmit",
+    "native:build": "cargo build --release --locked -p orch-core",
+    "native:test": "cargo test --locked -p orch-core",
+    "native:bench": "cargo run --release --locked -p orch-core --bin orch-core-bench",
+    "bench:activity:ts": "bun bench/activity.ts",
     "test": "bun test",
     "test:e2e": "bun test tests/e2e.test.ts",
     "test:e2e:live": "ORCH_LIVE=1 bun test tests/e2e-live.test.ts"

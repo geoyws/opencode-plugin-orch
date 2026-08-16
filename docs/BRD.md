@@ -33,6 +33,8 @@ progress view.
    material, cached checkpoints, and explicit budgets.
 5. Maintain user control through transparent plans, permissions, pause/resume,
    cancellation, and durable evidence.
+6. Reduce deterministic orchestration CPU and memory overhead through a
+   benchmark-gated Rust kernel without breaking OpenCode compatibility.
 
 ## Stakeholders
 
@@ -83,6 +85,14 @@ reported as complete merely because state exists.
 
 Commands, tools, and an optional TUI show current work, elapsed time, nodes,
 tokens, budgets, compact checkpoints, failures, and resulting evidence.
+
+### BR-8: Native efficiency with compatibility
+
+Deterministic state, scheduling, persistence, and budget operations migrate to
+Rust only when differential fixtures prove behavior parity and release
+benchmarks prove a material CPU/throughput improvement. The JavaScript/
+TypeScript surface remains only where required by the OpenCode and OpenTUI
+plugin ABIs.
 
 ## Success measures
 

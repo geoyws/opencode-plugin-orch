@@ -6,6 +6,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### v0.5 CLI lifecycle and Rust kernel
+
+- Fixed real `opencode run` workflows aborting when the lead turn exited by
+  keeping `orch_run` attached through settlement by default. Persistent
+  TUI/server callers can opt into `background: true`.
+- Added an actual installed-binary E2E covering slash-command registration,
+  planner fan-out, two worker agents, aggregation, process shutdown, compacted
+  snapshot replay, and final output.
+- Expanded the TUI activity badge to multiple rows with per-workflow elapsed
+  time, per-workflow active agents, and a concurrent-agent total.
+- Began the parity-gated Rust kernel migration in `crates/orch-core`; ADR-014
+  retains TypeScript only for the OpenCode/OpenTUI ABI and requires benchmarked
+  native gains before cutover. The first activity-projection prototype was
+  slower than Bun, so it remains a non-production benchmark instead of adding
+  a losing native boundary.
+
 ### v0.4 goal mode and dynamic workflows
 
 - Added `/goal` and `orch_goal`: session-scoped durable conditions,

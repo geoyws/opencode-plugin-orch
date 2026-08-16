@@ -318,9 +318,46 @@ interface RunView {
 }
 
 function replayRuns(project: string): RunView[] {
-  const fp = path.join(project, ".opencode", "plugin-orch", "runs.jsonl");
-  if (!fs.existsSync(fp)) return [];
+  const storeDir = path.join(project, ".opencode", "plugin-orch");
   const runs = new Map<string, RunView>();
+
+  // A clean CLI shutdown snapshots and compacts runs.jsonl. Seed from the
+  // snapshot exactly like Store.init(), then replay any newer tail events.
+  const snapshotPath = path.join(storeDir, "snapshot.json");
+  if (fs.existsSync(snapshotPath)) {
+    try {
+      const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf-8")) as {
+        runs?: Record<
+          string,
+          {
+            id: string;
+            workflow: string;
+            status: string;
+            output?: string;
+            error?: string;
+            iteration: number;
+            steps?: Record<string, StepView>;
+          }
+        >;
+      };
+      for (const run of Object.values(snapshot.runs ?? {})) {
+        runs.set(run.id, {
+          id: run.id,
+          workflow: run.workflow,
+          status: run.status,
+          output: run.output,
+          error: run.error,
+          iteration: run.iteration,
+          steps: new Map(Object.entries(run.steps ?? {})),
+        });
+      }
+    } catch {
+      // Production also falls back to the event log for a corrupt snapshot.
+    }
+  }
+
+  const fp = path.join(storeDir, "runs.jsonl");
+  if (!fs.existsSync(fp)) return [...runs.values()];
   for (const line of fs.readFileSync(fp, "utf-8").split("\n")) {
     if (!line) continue;
     let evt: { type: string; data: Record<string, unknown> };
@@ -875,7 +912,14 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
         client,
         project,
         {
-          leadTool: { name: "orch_run", args: { workflow: "e2e-hang", input: "E2E-HANG-INPUT" } },
+          leadTool: {
+            name: "orch_run",
+            args: {
+              workflow: "e2e-hang",
+              input: "E2E-HANG-INPUT",
+              background: true,
+            },
+          },
           cancelOnRunStart: true,
           steps: [],
         },
@@ -888,6 +932,114 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
       // orch_run tool result), and the cancel did not wait out the sleep.
       expect(mockCalls.some((c) => c.answered === "orch_cancel")).toBe(true);
       expect(Date.now() - started).toBeLessThan(25_000);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  test(
+    "t3: installed opencode CLI keeps an orchestrator workflow alive through completion",
+    async () => {
+      const project = makeProject("cli-orchestrator", {
+        "e2e-cli-orchestrator.json": {
+          version: 1,
+          name: "e2e-cli-orchestrator",
+          description: "installed CLI lifecycle regression",
+          pattern: "orchestrator",
+          steps: [
+            {
+              id: "planner",
+              instructions: "E2E-CLI-PLANNER. Plan this input: {{input}}",
+            },
+          ],
+          aggregate: {
+            id: "aggregate",
+            instructions: "E2E-CLI-AGGREGATE. Synthesize every worker result.",
+          },
+        },
+      });
+      mockScript = {
+        leadTool: {
+          name: "orch_run",
+          args: { workflow: "e2e-cli-orchestrator", input: "CLI-LIFECYCLE-INPUT" },
+        },
+        steps: [
+          {
+            marker: "E2E-CLI-PLANNER",
+            reply:
+              '[{"instructions":"E2E-CLI-WORKER-ONE"},{"instructions":"E2E-CLI-WORKER-TWO"}]',
+          },
+          { marker: "E2E-CLI-WORKER-ONE", reply: "CLI-WORKER-ONE-DONE" },
+          { marker: "E2E-CLI-WORKER-TWO", reply: "CLI-WORKER-TWO-DONE" },
+          { marker: "E2E-CLI-AGGREGATE", reply: "CLI-ORCHESTRATOR-FINAL" },
+        ],
+      };
+      mockCalls.length = 0;
+      cancelIssued = false;
+
+      const cliConfig = path.join(project, "opencode-cli-e2e.json");
+      fs.writeFileSync(
+        cliConfig,
+        JSON.stringify({
+          autoupdate: false,
+          plugin: [PLUGIN_PATH],
+          model: `${MOCK_PROVIDER}/${MOCK_MODEL_ID}`,
+          small_model: `${MOCK_PROVIDER}/${MOCK_MODEL_ID}`,
+          provider: {
+            [MOCK_PROVIDER]: {
+              npm: "@ai-sdk/openai-compatible",
+              name: "Mock LLM",
+              options: {
+                baseURL: `http://127.0.0.1:${mock.port}/v1`,
+                apiKey: "dummy",
+              },
+              models: { [MOCK_MODEL_ID]: { name: "Mock 1" } },
+            },
+          },
+        })
+      );
+
+      const proc = Bun.spawn(
+        [
+          OPENCODE_BIN!,
+          "run",
+          "--dir",
+          project,
+          "--model",
+          `${MOCK_PROVIDER}/${MOCK_MODEL_ID}`,
+          "--format",
+          "json",
+          "--command",
+          "e2e-cli-orchestrator",
+          "CLI-LIFECYCLE-INPUT",
+        ],
+        {
+          cwd: project,
+          env: { ...process.env, OPENCODE_CONFIG: cliConfig },
+          stdout: "pipe",
+          stderr: "pipe",
+        }
+      );
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        proc.kill();
+      }, 60_000);
+      const [exitCode, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]).finally(() => clearTimeout(timeout));
+
+      expect(timedOut, `CLI timed out\n${stderr}`).toBe(false);
+      expect(exitCode, `CLI failed\nstdout:\n${stdout}\nstderr:\n${stderr}`).toBe(0);
+      const run = await waitForTerminalRun(project, 10_000);
+      expect(run.status, run.error ?? stderr).toBe("completed");
+      expect(run.output).toBe("CLI-ORCHESTRATOR-FINAL");
+      expect(run.steps.get("planner")?.status).toBe("completed");
+      expect(run.steps.get("worker-1")?.output).toBe("CLI-WORKER-ONE-DONE");
+      expect(run.steps.get("worker-2")?.output).toBe("CLI-WORKER-TWO-DONE");
+      expect(run.steps.get("aggregate")?.status).toBe("completed");
+      expect(stdout).toContain("CLI-ORCHESTRATOR-FINAL");
     },
     TEST_TIMEOUT_MS
   );

@@ -4,14 +4,23 @@ import type { Runner } from "../core/runner.js";
 export function createRunTool(runner: Runner): ToolDefinition {
   return tool({
     description:
-      "Start a workflow run. The run executes in the background as a set of " +
-      "ephemeral opencode sessions (one per step). Use orch_status to track " +
-      "progress and orch_result to get the final output.",
+      "Run a workflow as a set of ephemeral opencode agent sessions. By " +
+      "default this tool stays attached until completion so one-shot CLI " +
+      "processes cannot abort the workflow during shutdown. Set background=true " +
+      "only in a persistent TUI/server session, then use orch_status and " +
+      "orch_result to track it.",
     args: {
       workflow: tool.schema
         .string()
         .describe("Workflow name (see `orch_workflows list`)"),
       input: tool.schema.string().describe("Input text for the run"),
+      background: tool.schema
+        .boolean()
+        .optional()
+        .describe(
+          "Detach immediately instead of waiting for completion. Use only when " +
+            "OpenCode will remain running (for example the interactive TUI)."
+        ),
       config: tool.schema
         .string()
         .optional()
@@ -28,7 +37,7 @@ export function createRunTool(runner: Runner): ToolDefinition {
             ' `stepRetries` (0-3, default 1) retries an LLM step on transient provider errors.'
         ),
     },
-    async execute(args) {
+    async execute(args, context) {
       try {
         let overrides: unknown;
         if (args.config !== undefined) {
@@ -41,6 +50,20 @@ export function createRunTool(runner: Runner): ToolDefinition {
           }
         }
         const run = await runner.startRun(args.workflow, args.input, overrides);
+        if (!args.background) {
+          const settled = await runner.waitForSettled(run.id, context.abort);
+          if (settled.status === "completed") {
+            return (
+              `Run ${settled.id} completed (workflow "${settled.workflow}", pattern ${settled.pattern}).` +
+              `${settled.note ? `\nNote: ${settled.note}` : ""}` +
+              `\n\nFinal output:\n${settled.output ?? ""}`
+            );
+          }
+          if (settled.status === "paused") {
+            return `Run ${settled.id} paused. Resume with orch_control.`;
+          }
+          return `Error: Run ${settled.id} ${settled.status}: ${settled.error ?? "no terminal reason recorded"}`;
+        }
         return (
           `Run ${run.id} started (workflow "${run.workflow}", pattern ${run.pattern}). ` +
           `Track with orch_status, collect with orch_result.`

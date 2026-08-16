@@ -299,6 +299,34 @@ export class Runner {
     return run;
   }
 
+  /**
+   * Keep an initiating tool call attached until the run leaves `running`.
+   * This is essential for one-shot `opencode run`: once the lead turn exits,
+   * OpenCode disposes the process and aborts every background step session.
+   * Persistent TUI callers can opt into detached execution instead.
+   */
+  async waitForSettled(runID: string, signal?: AbortSignal): Promise<Run> {
+    for (;;) {
+      const run = this.deps.store.getRun(runID);
+      if (!run) throw new Error(`Run ${runID} not found`);
+      if (run.status !== "running") return run;
+      if (signal?.aborted) throw new Error(`Run ${runID} wait aborted`);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(done, 50);
+        const abort = () => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", abort);
+          reject(new Error(`Run ${runID} wait aborted`));
+        };
+        function done() {
+          signal?.removeEventListener("abort", abort);
+          resolve();
+        }
+        signal?.addEventListener("abort", abort, { once: true });
+      });
+    }
+  }
+
   async cancel(runID: string): Promise<void> {
     const run = this.deps.store.getRun(runID);
     if (!run) throw new Error(`Run ${runID} not found`);

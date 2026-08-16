@@ -40,39 +40,64 @@ function runTokens(run: Run): string {
   return known ? `${total}${run.config.maxTokens ? `/${run.config.maxTokens}` : ""}` : "unknown";
 }
 
-export function activitySummary(
+export function formatElapsed(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function runningAgents(run: Run): number {
+  return Object.values(run.steps).filter(
+    (step) => step.status === "running" && step.sessionID !== undefined
+  ).length;
+}
+
+export function activityLines(
   snapshot: Snapshot | undefined,
-  sessionID?: string
-): string {
-  const sections: string[] = [];
+  sessionID?: string,
+  now = Date.now()
+): string[] {
+  const lines: string[] = [];
   const goal = sessionID ? snapshot?.goals?.[sessionID] : undefined;
   if (goal?.status === "active") {
-    sections.push(
+    lines.push(
       `goal active ${goal.turns}/${goal.maxTurns} · ${goal.observedTokens ?? "?"}/${goal.maxTokens} tok`
     );
   }
 
   const activeRuns = Object.values(snapshot?.runs ?? {}).filter(
     (run) => run.status === "running" || run.status === "paused"
-  );
-  if (activeRuns.length > 0) {
-    const running = activeRuns.filter((run) => run.status === "running").length;
-    const paused = activeRuns.length - running;
-    const state = [
-      running > 0 ? `${running} running` : undefined,
-      paused > 0 ? `${paused} paused` : undefined,
-    ]
-      .filter(Boolean)
-      .join(", ");
-    const knownTokens = activeRuns
-      .map(runTokens)
-      .filter((tokens) => tokens !== "unknown")
-      .join("+");
-    sections.push(
-      `workflows ${state}${knownTokens ? ` · ${knownTokens} tok` : ""}`
+  ).sort((a, b) => a.createdAt - b.createdAt);
+  let totalAgents = 0;
+  for (const run of activeRuns) {
+    const agents = runningAgents(run);
+    totalAgents += agents;
+    const tokens = runTokens(run);
+    lines.push(
+      `${run.workflow} · ${run.status} · ${formatElapsed(now - run.createdAt)} elapsed · ` +
+        `${agents} ${agents === 1 ? "agent" : "agents"}` +
+        `${tokens === "unknown" ? "" : ` · ${tokens} tok`}`
     );
   }
-  return sections.join("  │  ");
+  if (activeRuns.length > 1) {
+    lines.push(
+      `${totalAgents} ${totalAgents === 1 ? "agent" : "agents"} running across ` +
+        `${activeRuns.length} workflows`
+    );
+  }
+  return lines;
+}
+
+export function activitySummary(
+  snapshot: Snapshot | undefined,
+  sessionID?: string,
+  now = Date.now()
+): string {
+  return activityLines(snapshot, sessionID, now).join("\n");
 }
 
 function ActivityBadge(props: {
@@ -81,10 +106,18 @@ function ActivityBadge(props: {
   color: unknown;
 }) {
   const snapshot = createSnapshot(props.directory);
-  const summary = () => activitySummary(snapshot(), props.sessionID);
+  const lines = () => activityLines(snapshot(), props.sessionID);
   return (
-    <Show when={summary()}>
-      {(active) => <text fg={props.color as never}>◉ orch · {active()}</text>}
+    <Show when={lines().length > 0}>
+      <box flexDirection="column">
+        <For each={lines()}>
+          {(line, index) => (
+            <text fg={props.color as never}>
+              {index() === 0 ? "◉ orch · " : "  ↳ "}{line}
+            </text>
+          )}
+        </For>
+      </box>
     </Show>
   );
 }

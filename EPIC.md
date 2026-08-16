@@ -147,3 +147,24 @@ and exposes durable progress and controls after the initiating turn ends.
   auto-approval.
 - **Provider drift:** model references remain provider-neutral and live tests
   are opt-in.
+
+## Follow-on epic: Rust kernel and real CLI parity (v0.5)
+
+- [x] Reproduce the installed `opencode run` teardown abort with IFCA DeepSeek.
+- [x] Add an actual-binary E2E covering planner, two workers, aggregation,
+      process exit, snapshot recovery, and final output.
+- [x] Keep `orch_run` attached by default; retain explicit background mode for
+      persistent TUI/server sessions.
+- [x] Show goal, per-workflow elapsed time, per-workflow active agents, and
+      total active agents in a compact multi-row prompt indicator.
+- [x] Establish `crates/orch-core` with native activity projection, tests, and
+      a release benchmark.
+- [ ] Cut over activity projection only if it clears the native performance
+      gate; the initial Rust prototype was slower than Bun and remains unused.
+- [ ] Add the N-API bridge and cross-platform native artifact build matrix.
+- [ ] Migrate workflow IR validation and event-store transitions with golden
+      TypeScript/Rust differential fixtures.
+- [ ] Migrate scheduler patterns, budget/retry decisions, recovery, and goal
+      evaluation after each parity gate passes.
+- [ ] Remove the TypeScript kernel fallback only after restart, installed-CLI,
+      TUI, and paid DeepSeek parity receipts pass on supported platforms.

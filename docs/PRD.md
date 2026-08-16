@@ -1,6 +1,6 @@
 # Product Requirements Document: Goal mode and dynamic workflows
 
-**Status:** Implemented and live-validated for v0.4
+**Status:** v0.4 implemented; v0.5 Rust-kernel migration in progress
 **Date:** 2026-08-16
 **Target release:** v0.4.0
 
@@ -157,3 +157,26 @@ observable through tools, slash commands, and an optional TUI.
   budgets, and restart recovery.
 - README describes limitations and differentiates hermetic E2E from live model
   receipts.
+
+## v0.5 native-kernel requirements
+
+- Keep TypeScript only where required by the OpenCode/OpenTUI plugin ABI; move
+  deterministic orchestration and persistence into `crates/orch-core`.
+- Use an in-process N-API boundary when compatibility tests pass. Never spawn a
+  fresh native process for every event or status refresh.
+- Preserve byte-compatible reading of existing workflow definitions, event
+  logs, snapshots, compact checkpoints, and TUI read models.
+- Ship golden differential fixtures for every migrated state transition and
+  workflow pattern before switching its default implementation to Rust.
+- `orch_run` waits for a terminal/paused outcome by default so `opencode run`
+  cannot dispose active child agents. `background: true` is restricted to
+  persistent interactive/server sessions.
+- The prompt indicator uses multiple rows when needed: goal state, one row per
+  active workflow with elapsed wall time and per-run active-agent count, plus a
+  total-agent row for concurrent workflows.
+- Measure kernel time separately from model/network/command time. A Rust slice
+  replaces its TypeScript counterpart only after at least 2x throughput or 50%
+  lower CPU time on the agreed release benchmark and full behavior parity.
+- Required E2E boundaries are: SDK-hosted real OpenCode server, actual installed
+  `opencode run --command` process lifecycle, restart/replay, TUI projection,
+  and opt-in paid IFCA DeepSeek workflows including an orchestrator fan-out.

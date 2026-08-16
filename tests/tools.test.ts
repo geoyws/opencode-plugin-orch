@@ -39,8 +39,7 @@ afterEach(() => {
   dirs = [];
 });
 
-// Tools never look at the context — a dummy is enough.
-const ctx = {} as never;
+const ctx = { abort: new AbortController().signal } as never;
 
 async function call(tool: { execute: (a: never, c: never) => Promise<unknown> }, args: object): Promise<string> {
   return (await tool.execute(args as never, ctx)) as string;
@@ -48,11 +47,16 @@ async function call(tool: { execute: (a: never, c: never) => Promise<unknown> },
 
 /** Run chain-draft-refine to completion through orch_run. */
 async function completedChainRun(e: Env, tools: ReturnType<typeof createTools>): Promise<string> {
-  const out = await call(tools.orch_run, { workflow: "chain-draft-refine", input: "hello" });
-  const id = /Run (\S+) started/.exec(out)![1];
+  const attached = call(tools.orch_run, {
+    workflow: "chain-draft-refine",
+    input: "hello",
+  });
+  await waitFor(() => e.store.listRuns().length === 1, "run creation");
+  const id = e.store.listRuns()[0].id;
   await completePrompt(e, "draft out");
   await completePrompt(e, "final out");
   await waitForRun(e, id);
+  expect(await attached).toContain(`Run ${id} completed`);
   return id;
 }
 
@@ -109,6 +113,7 @@ describe("orch_run", () => {
     const out = await call(tools.orch_run, {
       workflow: "chain-draft-refine",
       input: "x",
+      background: true,
       config: JSON.stringify({
         isolation: "worktree",
         gateCommand: "npm test",
@@ -316,6 +321,7 @@ describe("orch_result", () => {
     const started = await call(tools.orch_run, {
       workflow: "chain-draft-refine",
       input: "x",
+      background: true,
     });
     const runningID = /Run (\S+) started/.exec(started)![1];
     expect(await call(tools.orch_result, { run: runningID })).toContain("still running");
@@ -340,6 +346,7 @@ describe("orch_cancel", () => {
     const started = await call(tools.orch_run, {
       workflow: "chain-draft-refine",
       input: "x",
+      background: true,
     });
     const id = /Run (\S+) started/.exec(started)![1];
     // wait for the step session to exist
@@ -370,6 +377,7 @@ describe("orch_control", () => {
     const started = await call(tools.orch_run, {
       workflow: "chain-draft-refine",
       input: "x",
+      background: true,
     });
     const id = /Run (\S+) started/.exec(started)![1];
     await waitFor(() => e.client.prompts.length === 1, "step session");

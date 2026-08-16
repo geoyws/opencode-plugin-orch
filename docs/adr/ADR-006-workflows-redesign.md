@@ -21,7 +21,13 @@ Rebuild orch from scratch as a **stateless workflow engine for opencode** (versi
 
 1. **A run executes a workflow definition as a set of ephemeral opencode sessions** — one session per step invocation, created on demand, titled `orch/<run-id>/<step-id>`, and discarded. There are no persistent members; the only state that outlives a step is the run record in the store.
 2. **Five built-in patterns**, matching the Anthropic essay: `chain` (`chain-draft-refine`), `routing` (`route-by-intent`), `parallel` (`parallel-review`), `orchestrator` (`orchestrate-tasks`), `evaluator` (`evaluator-loop`). Users add custom definitions as JSON in `.opencode/workflows/*.json`, validated by the same Zod schema as the built-ins.
-3. **Event-driven advancement.** `orch_run` returns immediately; the `event` hook drives runs forward on `session.idle` (collect the last assistant message as the step output, start the next step) and fails runs on `session.error`. Steps carry a 10-minute timeout.
+3. **Event-driven advancement with an attached default.** The `event` hook
+   drives runs forward on `session.idle` (collect the last assistant message as
+   the step output, start the next step) and fails runs on `session.error`.
+   `orch_run` keeps its initiating tool call attached until settlement by
+   default because a one-shot `opencode run` process otherwise disposes and
+   aborts its child sessions. Persistent TUI/server callers may explicitly set
+   `background: true`. Steps carry a 10-minute timeout.
 4. **Event-sourced run store.** The existing JSONL + snapshot + replay `Store` design is kept, with new event types only: `run_created`, `step_started`, `step_completed`, `step_failed`, `run_completed`, `run_failed`, `run_cancelled`.
 5. **Runs are not resumed across restarts in 0.2.0.** On plugin init, replay marks any run left in `running` as `failed` with reason "plugin restarted". There is no cross-restart session revalidation — with ephemeral sessions there is nothing meaningful to reattach to.
 6. **Tool surface drops from 12 to 7:** `orch_run`, `orch_workflows`, `orch_runs`, `orch_status`, `orch_result`, `orch_cancel`, `orch_log`. `orch_status` / `orch_result` keep their names and prefix-matching but now report on runs instead of teams; `orch_log` is reused as-is; `orch_cancel` replaces `orch_shutdown`.

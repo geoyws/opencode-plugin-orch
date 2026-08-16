@@ -22,8 +22,10 @@ without the TUI target.
 OpenCode does not auto-discover TUI entrypoints from `opencode.json`. Install
 the same package spec separately in `tui.json`; its loader resolves the
 package's `./tui` export. The prompt slot shows a persistent active-goal and
-workflow-execution summary, while `/orch-dashboard` provides the detailed
-read-only view.
+workflow-execution summary, including a live elapsed time and active-agent
+count for every running/paused workflow. It renders multiple rows rather than
+compressing concurrent activity into one line. `/orch-dashboard` provides the
+detailed read-only view.
 
 ## Consequences
 

@@ -8,7 +8,7 @@ Adds 9 tools to your opencode session:
 
 | Tool | Purpose |
 |---|---|
-| `orch_run` | Start a workflow run. Executes in the background as ephemeral opencode sessions (one per step invocation). Optional JSON `config` string — see [run configuration](#run-configuration) for model routing, limits, isolation, retries, permissions, and token/cost budgets |
+| `orch_run` | Run a workflow as ephemeral opencode sessions (one per step invocation). Attached until settlement by default so one-shot CLI runs cannot abort their children; set `background: true` only in a persistent TUI/server. Optional JSON `config` string — see [run configuration](#run-configuration) for model routing, limits, isolation, retries, permissions, and token/cost budgets |
 | `orch_workflows` | List, inspect, validate, and atomically save versioned workflow IR (`list` / `info` / `validate` / `save`) |
 | `orch_runs` | List workflow runs, newest first. Optional `status` filter and `limit` |
 | `orch_status` | Run detail: pattern, status, per-step state, current iteration (evaluator), timing. Accepts a run id or unique id prefix |
@@ -33,7 +33,7 @@ Eight built-in workflows:
 
 Features:
 
-- **Event-driven runs** — `orch_run` returns immediately; the `event` hook drives each run forward on `session.idle` (collect the step output, start the next step) and fails the run on `session.error`. Steps also have a 10-minute timeout.
+- **CLI-safe event-driven runs** — the `event` hook drives each run forward on `session.idle` (collect the step output, start the next step) and fails the run on `session.error`. `orch_run` stays attached by default because a one-shot `opencode run` process would otherwise dispose active child sessions; persistent interactive sessions can opt into `background: true`. Steps also have a 10-minute timeout.
 - **Goal mode** — `/goal <condition>` independently evaluates bounded evidence after each lead turn and continues the same session on `not_met`; `/goal` reports status and `/goal clear` stops it.
 - **Automatic token economy** — provider-reported input, output, reasoning, cache-read, cache-write, and cost are persisted. Soft thresholds switch later prompts to compact checkpoints; hard token/cost limits stop before another step or turn. Unknown usage remains explicitly unknown.
 - **Ephemeral step sessions** — every step invocation is one throwaway opencode session titled `orch/<run-id>/<step-id>`. No persistent members, no shared state between steps except what the runner passes via prompt templates.
@@ -41,7 +41,8 @@ Features:
 - **Event-sourced run store** — run/step state is a JSONL event log (`run_created`, `step_started`, `step_completed`, `step_failed`, `run_completed`, `run_failed`, `run_cancelled`) with a periodic atomic snapshot, persisted under `.opencode/plugin-orch/` in your project.
 - **Restart-safe resume** — interrupted runs recover as `paused`; completed steps are reused, the interrupted invocation is cancelled, and `orch_control resume` continues from the first unfinished step.
 - **Hardened init + error reporting** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `.opencode/plugin-orch/init.log`). All hooks and tools are wrapped so throws can't break opencode; every tool returns `Error: <msg>` strings on failure. On startup you see `[orch] ready · 9 tools` as a success toast.
-- **Separate TUI target** — `opencode-plugin-orch/tui` adds a persistent prompt-side activity badge for the active goal and running/paused workflows, plus a read-only workflow/goal dashboard, without coupling the server engine to OpenTUI.
+- **Separate TUI target** — `opencode-plugin-orch/tui` adds a persistent multi-row prompt-side activity badge for the active goal, each workflow's elapsed time, and active agent counts, plus a read-only workflow/goal dashboard, without coupling the server engine to OpenTUI.
+- **Rust kernel migration** — v0.5 is moving deterministic state, scheduling, budgets, and projections into `crates/orch-core`, retaining only the TypeScript adapters required by OpenCode/OpenTUI. ADR-014 requires differential parity and measured native wins before each cutover.
 - **Worktree isolation** — parallel/orchestrator fan-out steps can run in per-step git worktrees (sibling dir `.orch-worktrees/`) with copy-back on success, so concurrent writers don't stomp on each other. See [Worktree isolation](#worktree-isolation).
 - **Shell steps and gates** — steps can be plain shell commands, and evaluator loops can gate on a real command (e.g. `npm test`) instead of only a critic model. See [Shell steps and gates](#shell-steps-and-gates).
 - **Per-step models and output caps** — `stepModels` pins any step to its own model; `maxStepOutputChars` caps how much step output feeds later prompts. See [choosing models](#choosing-models) and [run configuration](#run-configuration).
