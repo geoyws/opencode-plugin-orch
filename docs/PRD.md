@@ -148,6 +148,9 @@ observable through tools, slash commands, and an optional TUI.
   totals including cache reads and writes.
 - Server/TUI communication uses durable read models and authenticated OpenCode
   operations; the TUI must not mutate snapshot files directly.
+- Loading the Solid-based TUI implementation must not block OpenCode's first
+  prompt paint; its badge, dashboard, and hot-reload watcher activate just
+  after startup and remain lifecycle-scoped.
 
 ## Data and persistence
 
@@ -169,7 +172,9 @@ observable through tools, slash commands, and an optional TUI.
 - Opt-in `ORCH_LIVE=1 ORCH_LIVE_MODEL=<provider>/<model>` scenarios for
   DeepSeek and other real models.
 - Typecheck and build must pass with strict TypeScript.
-- A TUI load smoke test must verify the separate target entrypoint.
+- TUI tests must verify the separate target entrypoint, eventual slot
+  registration, and that activation returns even while implementation loading
+  remains unsettled.
 - E2E must prove lead/worker isolation, dynamic control snapshots, steering,
   cancellation, post-compaction continuation/restart recovery, and the
   installed statusline token display.

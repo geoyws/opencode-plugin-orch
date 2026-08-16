@@ -153,6 +153,7 @@ describe("separate TUI entrypoint", () => {
     const disposers: Array<() => void> = [];
     let deactivated = 0;
     let activated = 0;
+    let slotsRegistered = 0;
     try {
       const built = await import(
         `${new URL(`file://${path.join(probe, "tui-wrapper.js")}`).href}?probe=${Date.now()}`
@@ -161,7 +162,12 @@ describe("separate TUI entrypoint", () => {
         {
           keymap: { registerLayer: () => undefined },
           route: { register: () => undefined, navigate: () => undefined },
-          slots: { register: () => "orch-slots" },
+          slots: {
+            register: () => {
+              slotsRegistered += 1;
+              return "orch-slots";
+            },
+          },
           state: { path: { directory: probe } },
           theme: { current: { text: "white", textMuted: "gray", accent: "blue" } },
           lifecycle: {
@@ -176,6 +182,12 @@ describe("separate TUI entrypoint", () => {
         undefined,
         { id: "opencode-plugin-orch" }
       );
+
+      const registrationDeadline = Date.now() + 1_500;
+      while (slotsRegistered === 0 && Date.now() < registrationDeadline) {
+        await Bun.sleep(10);
+      }
+      expect(slotsRegistered).toBe(1);
 
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
         version: string;
@@ -197,4 +209,48 @@ describe("separate TUI entrypoint", () => {
       fs.rmSync(probe, { recursive: true, force: true });
     }
   }, 5_000);
+
+  it("returns built TUI activation before a slow implementation settles", async () => {
+    const dist = path.resolve(import.meta.dir, "..", "dist");
+    const wrapper = path.join(dist, "tui-wrapper.js");
+    const hot = path.join(dist, ".hot");
+    if (!fs.existsSync(wrapper) || !fs.existsSync(path.join(hot, "manifest.json"))) return;
+
+    const probe = fs.mkdtempSync(path.join(dist, ".tui-startup-test-"));
+    fs.copyFileSync(wrapper, path.join(probe, "tui-wrapper.js"));
+    fs.mkdirSync(path.join(probe, ".hot"));
+    fs.writeFileSync(
+      path.join(probe, ".hot", "slow.js"),
+      "export default { id: 'opencode-plugin-orch', tui: async () => new Promise(() => {}) };\n"
+    );
+    fs.writeFileSync(
+      path.join(probe, ".hot", "manifest.json"),
+      JSON.stringify({ version: "startup-probe", server: "unused.js", tui: "slow.js" })
+    );
+    const disposers: Array<() => void> = [];
+    try {
+      const built = await import(
+        `${new URL(`file://${path.join(probe, "tui-wrapper.js")}`).href}?startup=${Date.now()}`
+      );
+      const activation = built.default.tui(
+        {
+          lifecycle: {
+            signal: new AbortController().signal,
+            onDispose: (dispose: () => void) => disposers.push(dispose),
+          },
+          plugins: { deactivate: async () => undefined, activate: async () => undefined },
+        },
+        undefined,
+        { id: "opencode-plugin-orch" }
+      );
+      const result = await Promise.race([
+        activation.then(() => "returned"),
+        Bun.sleep(75).then(() => "blocked"),
+      ]);
+      expect(result).toBe("returned");
+    } finally {
+      for (const dispose of disposers) dispose();
+      fs.rmSync(probe, { recursive: true, force: true });
+    }
+  });
 });

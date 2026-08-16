@@ -5,6 +5,7 @@ import type {
 } from "@opencode-ai/plugin/tui";
 
 type HotManifest = { version: string; server: string; tui: string };
+const TUI_ACTIVATION_DELAY_MS = 500;
 const manifestURL = new URL("./.hot/manifest.json", import.meta.url);
 
 function readManifest(): HotManifest | undefined {
@@ -29,25 +30,47 @@ async function loadTui(): Promise<TuiPlugin> {
 
 const tui: TuiPlugin = async (api, options, meta) => {
   const loadedVersion = readManifest()?.version;
-  await (await loadTui())(api, options, meta);
-  if (!loadedVersion) return;
-
+  let activationTimer: ReturnType<typeof setTimeout> | undefined;
+  let reloadTimer: ReturnType<typeof setInterval> | undefined;
+  let disposed = api.lifecycle.signal.aborted;
   let reloading = false;
-  const timer = setInterval(() => {
-    const next = readManifest()?.version;
-    if (!next || next === loadedVersion || reloading || api.lifecycle.signal.aborted) return;
-    reloading = true;
+
+  // Importing @opentui/solid costs materially more than Orch's server init.
+  // Do it after OpenCode has had a chance to paint its prompt: a zero-delay
+  // timer still runs during renderer setup and blocks that first frame. The
+  // badge and dashboard may appear a fraction later, but never hold startup.
+  activationTimer = setTimeout(() => {
+    activationTimer = undefined;
+    if (disposed || api.lifecycle.signal.aborted) return;
     void (async () => {
-      try {
-        await api.plugins.deactivate(meta.id);
-        await api.plugins.activate(meta.id);
-      } catch {
-        reloading = false;
-      }
-    })();
-  }, 500);
-  if (typeof timer.unref === "function") timer.unref();
-  api.lifecycle.onDispose(() => clearInterval(timer));
+      await (await loadTui())(api, options, meta);
+      if (!loadedVersion || disposed || api.lifecycle.signal.aborted) return;
+
+      reloadTimer = setInterval(() => {
+        const next = readManifest()?.version;
+        if (!next || next === loadedVersion || reloading || disposed) return;
+        reloading = true;
+        void (async () => {
+          try {
+            await api.plugins.deactivate(meta.id);
+            await api.plugins.activate(meta.id);
+          } catch {
+            reloading = false;
+          }
+        })();
+      }, 500);
+      if (typeof reloadTimer.unref === "function") reloadTimer.unref();
+    })().catch((err) => {
+      console.error(`[orch] deferred TUI activation failed: ${(err as Error).message}`);
+    });
+  }, TUI_ACTIVATION_DELAY_MS);
+  if (typeof activationTimer.unref === "function") activationTimer.unref();
+
+  api.lifecycle.onDispose(() => {
+    disposed = true;
+    if (activationTimer) clearTimeout(activationTimer);
+    if (reloadTimer) clearInterval(reloadTimer);
+  });
 };
 
 const module: TuiPluginModule = { id: "opencode-plugin-orch", tui };

@@ -21,6 +21,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and per-workflow token totals.
 - Added atomic generation builds and `pnpm dev` hot reload for both server and
   TUI entrypoints. Failed builds retain the last good generation.
+- Deferred the Solid TUI generation until after OpenCode's initial paint, so
+  the activity badge and dashboard no longer block startup.
 - Fixed goal continuation after automatic compaction: the evaluator's next
   prompt is now persisted before a detached compaction request, released once
   on worker idle, and recovered after plugin reload without prompting a busy
@@ -36,7 +38,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Added ADR-016/017 and updated BRD, PRD, and the v0.6 epic. Orch remains
   provider-neutral; DeepSeek Harness integration is explicitly a separate
   plugin concern.
-- Verified 167 non-live tests, including 12 real-OpenCode E2E scenarios, two Rust
+- Verified 168 non-live tests, including 12 real-OpenCode E2E scenarios, two Rust
   fixture tests, all three local OpenCode server profiles, all four paid IFCA
   DeepSeek workflow scenarios, and a paid goal auto-compaction continuation.
 
