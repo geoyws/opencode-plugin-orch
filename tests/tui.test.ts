@@ -96,16 +96,24 @@ describe("separate TUI entrypoint", () => {
     } satisfies Snapshot;
 
     expect(activityLines(snapshot, "lead", 130_000)).toEqual([
-      "goal active 2/20 · worker running · 1 agent · 120/1000 tok",
-      "parallel-review · running · 2m 0s elapsed · 1 agent · 137 tok",
-      "test-fix-loop · paused · 1m 0s elapsed · 0 agents · unknown tok",
+      "goal active 2/20 · worker running · 1 agent",
+      "parallel-review · running · 2m 0s elapsed · 1 agent",
+      "test-fix-loop · paused · 1m 0s elapsed · 0 agents",
       "1 agent running across 2 workflows",
     ]);
     expect(activitySummary(snapshot, "other", 130_000)).toBe(
-      "parallel-review · running · 2m 0s elapsed · 1 agent · 137 tok\n" +
-        "test-fix-loop · paused · 1m 0s elapsed · 0 agents · unknown tok\n" +
+      "parallel-review · running · 2m 0s elapsed · 1 agent\n" +
+        "test-fix-loop · paused · 1m 0s elapsed · 0 agents\n" +
         "1 agent running across 2 workflows"
     );
+    expect(activityLines(snapshot, undefined, 130_000)).not.toContain(
+      "goal active 2/20 · worker running · 1 agent"
+    );
+    expect(activityLines(snapshot, "lead", 130_000, 60)).toEqual([
+      "goal active · running · 1 agent",
+      "2 workflows · 1 agent",
+    ]);
+    expect(activityLines(snapshot, "lead", 130_000).join(" ")).not.toContain("tok");
     expect(runTokens(snapshot.runs.run_1)).toBe("137");
     expect(formatElapsed(3_661_900)).toBe("1h 1m 1s");
   });

@@ -25,6 +25,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   prompt is now persisted before a detached compaction request, released once
   on worker idle, and recovered after plugin reload without prompting a busy
   worker. The TUI exposes the intermediate `compacting` state.
+- Scoped prompt-side goals to their exact lead session, so a new/home session
+  no longer displays another session's durable goal. The responsive badge now
+  removes token/cost detail first and collapses active workflows on narrow
+  terminals while the dashboard and tools retain full accounting.
 - Hardened evaluator approval to a PASS-only verdict and strengthened the
   test-author workflow against tautological assertions after paid IFCA
   DeepSeek live tests found both weaknesses.

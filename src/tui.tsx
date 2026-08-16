@@ -53,19 +53,29 @@ function runningAgents(run: Run): number {
   ).length;
 }
 
+function plural(count: number, singular: string): string {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function truncateLine(line: string, maxWidth: number): string {
+  if (line.length <= maxWidth) return line;
+  if (maxWidth <= 1) return "";
+  return `${line.slice(0, maxWidth - 1)}…`;
+}
+
 export function activityLines(
   snapshot: Snapshot | undefined,
   sessionID?: string,
-  now = Date.now()
+  now = Date.now(),
+  terminalWidth = 120
 ): string[] {
   const lines: string[] = [];
-  const goals = sessionID
-    ? snapshot?.goals?.[sessionID]
-      ? [snapshot.goals[sessionID]]
-      : []
-    : Object.values(snapshot?.goals ?? {}).filter(
-        (goal) => goal.status === "active" || goal.status === "paused"
-      );
+  // Goals belong to the lead session that created them. The home/start view
+  // has no session ID, so showing every durable project goal there falsely
+  // makes a brand-new session look as though it owns old work.
+  const goals = sessionID && snapshot?.goals?.[sessionID]
+    ? [snapshot.goals[sessionID]]
+    : [];
   for (const goal of goals) {
     if (goal.status !== "active" && goal.status !== "paused") continue;
     const goalAgents =
@@ -75,34 +85,40 @@ export function activityLines(
         goal.workerStatus === "compacting")
         ? 1
         : 0;
+    const worker = goal.workerStatus ?? "unknown";
     lines.push(
-      `goal ${goal.status} ${goal.turns}/${goal.maxTurns} · worker ${goal.workerStatus ?? "unknown"} · ` +
-        `${goalAgents} ${goalAgents === 1 ? "agent" : "agents"} · ` +
-        `${goal.observedTokens ?? "unknown"}/${goal.maxTokens} tok`
+      terminalWidth >= 100
+        ? `goal ${goal.status} ${goal.turns}/${goal.maxTurns} · worker ${worker} · ${plural(goalAgents, "agent")}`
+        : `goal ${goal.status} · ${worker} · ${plural(goalAgents, "agent")}`
     );
   }
 
   const activeRuns = Object.values(snapshot?.runs ?? {}).filter(
     (run) => run.status === "running" || run.status === "paused"
   ).sort((a, b) => a.createdAt - b.createdAt);
-  let totalAgents = 0;
-  for (const run of activeRuns) {
-    const agents = runningAgents(run);
-    totalAgents += agents;
-    const tokens = runTokens(run);
+  const totalAgents = activeRuns.reduce((sum, run) => sum + runningAgents(run), 0);
+  if (terminalWidth < 72 && activeRuns.length > 0) {
+    lines.push(`${plural(activeRuns.length, "workflow")} · ${plural(totalAgents, "agent")}`);
+  } else {
+    for (const run of activeRuns) {
+      const agents = runningAgents(run);
+      lines.push(
+        terminalWidth >= 100
+          ? `${run.workflow} · ${run.status} · ${formatElapsed(now - run.createdAt)} elapsed · ${plural(agents, "agent")}`
+          : `${run.workflow} · ${run.status} · ${plural(agents, "agent")}`
+      );
+    }
+  }
+  if (activeRuns.length > 1 && terminalWidth >= 72) {
     lines.push(
-      `${run.workflow} · ${run.status} · ${formatElapsed(now - run.createdAt)} elapsed · ` +
-        `${agents} ${agents === 1 ? "agent" : "agents"}` +
-        ` · ${tokens} tok`
+      `${plural(totalAgents, "agent")} running across ${plural(activeRuns.length, "workflow")}`
     );
   }
-  if (activeRuns.length > 1) {
-    lines.push(
-      `${totalAgents} ${totalAgents === 1 ? "agent" : "agents"} running across ` +
-        `${activeRuns.length} workflows`
-    );
-  }
-  return lines;
+  // The right-hand prompt slot shares horizontal space with OpenCode itself.
+  // Keep a conservative margin and truncate names only after optional details
+  // have already been removed.
+  const maxLineWidth = Math.max(16, Math.floor(terminalWidth * 0.55));
+  return lines.map((line) => truncateLine(line, maxLineWidth));
 }
 
 export function activitySummary(
@@ -117,9 +133,18 @@ function ActivityBadge(props: {
   directory: string;
   sessionID?: string;
   color: unknown;
+  renderer: {
+    width: number;
+    on(event: "resize", listener: () => void): unknown;
+    off(event: "resize", listener: () => void): unknown;
+  };
 }) {
   const snapshot = createSnapshot(props.directory);
-  const lines = () => activityLines(snapshot(), props.sessionID);
+  const [width, setWidth] = createSignal(props.renderer.width);
+  const onResize = () => setWidth(props.renderer.width);
+  props.renderer.on("resize", onResize);
+  onCleanup(() => props.renderer.off("resize", onResize));
+  const lines = () => activityLines(snapshot(), props.sessionID, Date.now(), width());
   return (
     <Show when={lines().length > 0}>
       <box flexDirection="column">
@@ -212,6 +237,7 @@ const tui: TuiPlugin = async (api) => {
         <ActivityBadge
           directory={api.state.path.directory}
           color={api.theme.current.accent}
+          renderer={api.renderer}
         />
       ),
       session_prompt_right: (_context, props) => (
@@ -219,6 +245,7 @@ const tui: TuiPlugin = async (api) => {
           directory={api.state.path.directory}
           sessionID={props.session_id}
           color={api.theme.current.accent}
+          renderer={api.renderer}
         />
       ),
     },
