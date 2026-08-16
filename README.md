@@ -15,8 +15,8 @@ Adds 9 tools to your opencode session:
 | `orch_result` | Final output of a run. `summary` (default), `detailed` (every step output), or `json` (raw run record) |
 | `orch_cancel` | Cancel a running run: aborts in-flight step sessions and marks the run cancelled |
 | `orch_log` | Inspect the current opencode log for plugin output — `tail` / `errors` / `stats` |
-| `orch_goal` | Set, inspect, or clear the initiating session's autonomous completion condition |
-| `orch_control` | Pause at a safe boundary, resume (including after restart), retry a terminal failed/cancelled run, or cancel it |
+| `orch_goal` | Set, inspect, pause, resume, steer, or clear a lead session's autonomous completion condition; work runs in a dedicated worker session |
+| `orch_control` | Pause at a safe boundary, resume, steer active/future workflow agents, retry a terminal failed/cancelled run, or cancel it |
 
 Eight built-in workflows:
 
@@ -34,14 +34,16 @@ Eight built-in workflows:
 Features:
 
 - **CLI-safe event-driven runs** — the `event` hook drives each run forward on `session.idle` (collect the step output, start the next step) and fails the run on `session.error`. `orch_run` stays attached by default because a one-shot `opencode run` process would otherwise dispose active child sessions; persistent interactive sessions can opt into `background: true`. Steps also have a 10-minute timeout.
-- **Goal mode** — `/goal <condition>` independently evaluates bounded evidence after each lead turn and continues the same session on `not_met`; `/goal` reports status and `/goal clear` stops it.
+- **Lead/control-plane goal mode** — `/goal <condition>` launches a dedicated worker, independently evaluates that worker's bounded evidence, and continues the worker on `not_met`. The initiating conversation stays clear for `/goal`, `/goal steer ...`, `/goal pause`, `/goal resume`, and `/goal clear`.
+- **Live delegated-work awareness** — every lead turn receives a compact system snapshot of active goals/workflows, elapsed time, worker state, active agents, tokens, steps, last verdict, and latest steering. Worker/evaluator/step sessions do not receive the lead instruction.
 - **Automatic token economy** — provider-reported input, output, reasoning, cache-read, cache-write, and cost are persisted. Soft thresholds switch later prompts to compact checkpoints; hard token/cost limits stop before another step or turn. Unknown usage remains explicitly unknown.
 - **Ephemeral step sessions** — every step invocation is one throwaway opencode session titled `orch/<run-id>/<step-id>`. No persistent members, no shared state between steps except what the runner passes via prompt templates.
 - **Session teardown** — step sessions are deleted when their step settles (success, failure, cancel, timeout), and orphaned sessions from runs interrupted by a restart are aborted and deleted on plugin init. Set `keepSessions: true` in the run config to keep them for debugging.
 - **Event-sourced run store** — run/step state is a JSONL event log (`run_created`, `step_started`, `step_completed`, `step_failed`, `run_completed`, `run_failed`, `run_cancelled`) with a periodic atomic snapshot, persisted under `.opencode/plugin-orch/` in your project.
 - **Restart-safe resume** — interrupted runs recover as `paused`; completed steps are reused, the interrupted invocation is cancelled, and `orch_control resume` continues from the first unfinished step.
 - **Hardened init + error reporting** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `.opencode/plugin-orch/init.log`). All hooks and tools are wrapped so throws can't break opencode; every tool returns `Error: <msg>` strings on failure. On startup you see `[orch] ready · 9 tools` as a success toast.
-- **Separate TUI target** — `opencode-plugin-orch/tui` adds a persistent multi-row prompt-side activity badge for the active goal, each workflow's elapsed time, and active agent counts, plus a read-only workflow/goal dashboard, without coupling the server engine to OpenTUI.
+- **Separate TUI target** — `opencode-plugin-orch/tui` adds a persistent multi-row prompt-side activity badge for goal-worker state/count/tokens and each workflow's elapsed time, tokens, and active agents, plus a read-only workflow/goal dashboard, without coupling the server engine to OpenTUI.
+- **Atomic hot reload** — each build publishes uniquely named bundled server/TUI generations behind an atomic manifest. `pnpm dev` watches `src/`; the server disposes/recreates the project instance and the TUI deactivates/reactivates scoped registrations without restarting OpenCode. Failed builds leave the last good generation active.
 - **Portable TypeScript runtime** — workflows, goals, persistence, compaction, budgets, and projections stay in TypeScript across all OpenCode installations. The slower Rust activity prototype remains an unlinked benchmark fixture; ADR-015 requires profiling and a material measured win before any bounded native production proposal.
 - **Worktree isolation** — parallel/orchestrator fan-out steps can run in per-step git worktrees (sibling dir `.orch-worktrees/`) with copy-back on success, so concurrent writers don't stomp on each other. See [Worktree isolation](#worktree-isolation).
 - **Shell steps and gates** — steps can be plain shell commands, and evaluator loops can gate on a real command (e.g. `npm test`) instead of only a critic model. See [Shell steps and gates](#shell-steps-and-gates).
@@ -66,7 +68,7 @@ A five-minute path from zero to your first workflow run.
 mkdir -p ~/work/src
 git clone https://github.com/geoyws/opencode-plugin-orch.git ~/work/src/opencode-plugin-orch
 cd ~/work/src/opencode-plugin-orch
-pnpm install        # pnpm's `prepare` script auto-runs `tsc` so dist/ is built
+pnpm install        # `prepare` typechecks and publishes an atomic dist/ generation
 ```
 
 Then register the plugin in your opencode config at `~/.config/opencode/opencode.json`:
@@ -244,7 +246,11 @@ There is no platform-specific code path — the resolved absolute path just happ
 
 ## Using it
 
-Use `/goal all tests pass and the built artifact loads` to start an autonomous completion loop. `/goal` reports its turns, elapsed time, observed usage, evaluator, and last verdict; `/goal clear` ends it. Goal continuation keeps the initiating session's model, agent, and permission policy.
+Use `/goal all tests pass and the built artifact loads` to launch a dedicated autonomous worker. `/goal` reports its worker, turns, elapsed time, observed usage, evaluator, and last verdict. `/goal steer run the browser test`, `/goal pause`, `/goal resume`, and `/goal clear` control it without moving implementation traces into the lead conversation. The worker inherits the lead's selected model and agent when OpenCode reports them.
+
+Orch is deliberately not a DeepSeek Harness integration. It accepts any
+provider/model reference already exposed by OpenCode; a separate plugin owns
+any DeepSeek Harness runtime or protocol integration.
 
 Use `/workflow-author <task>` to have the current model—including DeepSeek—produce strict version 1 IR, validate it, and save it under `.opencode/workflows/`. `/workflow-run <name> <input>` starts it, while `/workflows` shows definitions and runs. Saved workflow names are also registered as slash commands.
 
@@ -425,6 +431,7 @@ Be honest with yourself about the blast radius: an auto-allowed step session can
 > "Cancel that run" — aborts in-flight step sessions and marks the run cancelled
 > "Pause that run" — lets an in-flight invocation settle, then starts no new steps
 > "Resume that run" — reuses completed steps, including after an OpenCode restart
+> "Steer that run toward the browser regression" — persists direction and sends it to active model agents
 
 Run history survives restarts. A run interrupted while `running` comes back `paused`; its old live session is aborted/deleted, and resume starts at the first unfinished step. The event log remains authoritative, `snapshot.json` is the periodically compacted recovery fast path, and `view.json` is updated atomically after each event so the TUI does not wait for the snapshot interval.
 
@@ -432,7 +439,8 @@ Run history survives restarts. A run interrupted while `running` comes back `pau
 
 ```bash
 pnpm install            # install deps
-pnpm run build          # compile to dist/
+pnpm run build          # compile + publish one atomic server/TUI generation
+pnpm dev                # watch src/ and hot-reload successful generations
 pnpm test               # run the test suite (bun test)
 pnpm run typecheck      # tsc --noEmit
 ```
@@ -444,8 +452,10 @@ The test suite is at `tests/`, driven by `bun test` with a fake opencode client 
 - `runner.test.ts` — all 5 patterns end-to-end against the fake client: chain ordering, routing label matching, parallel concurrency + aggregate, orchestrator planner JSON parsing + workers, evaluator PASS loop and budget exhaustion, gate pass/fail feedback, command steps, cancel, step timeout
 - `worktree.test.ts` — porcelain parsing, the add/copy-back/remove lifecycle against real git repos in temp dirs, and worktree-isolated runs (poll fallback, conflicts, `isolationFallback`)
 - `permissions.test.ts` — the git-mutation matcher (mutating denied, read-only allowed) and the `permission.ask` hook policy (step sessions auto-allowed, non-step sessions untouched, `ORCH_STEP_PERMISSIONS=ask` escape hatch)
-- `goal.test.ts` — independent verdicts, automatic continuation, compaction,
-  monotonic usage across transcript replacement, and budgets
+- `goal.test.ts` — dedicated worker isolation, independent verdicts, steering,
+  automatic worker continuation, compaction, monotonic usage, and budgets
+- `control-plane.test.ts` — bounded live lead snapshots and control guidance
+- `usage.test.ts` — complete category accounting, including cache reads/writes
 - `tools.test.ts` — all 9 tools with the same fake-client harness
 - `plugin.test.ts` — init wires hooks/commands, returns 9 tools, init failure returns `{}` without throwing
 - `tui.test.ts` — separate target load smoke test
@@ -458,12 +468,15 @@ The test suite is at `tests/`, driven by `bun test` with a fake opencode client 
 
 ```
 src/
-├── plugin.ts                  # entry point — init wrapped in a 5s timeout + error boundary
-├── index.ts                   # exports the plugin module (named `server` export)
+├── plugin.ts                  # implementation — init timeout + error boundary
+├── index.ts                   # stable server wrapper + generation reload
+├── tui-wrapper.ts             # stable TUI wrapper + scoped generation reload
 ├── tui.tsx                    # separate OpenTUI target: badge + durable dashboard
 ├── core/
 │   ├── runner.ts              # workflow engine — pattern dispatch, step sessions, cancel
-│   ├── goal-controller.ts     # session-scoped evaluator/continuation state machine
+│   ├── goal-controller.ts     # lead/worker goal, evaluator, budgets, steering
+│   ├── control-plane.ts       # compact dynamic lead snapshot
+│   ├── usage.ts               # complete normalized token accounting
 │   ├── worktree.ts            # git worktree lifecycle — add/remove, porcelain parse, copy-back
 │   ├── exec.ts                # /bin/sh -c + execFile helpers (shell steps, gates, git)
 │   └── reporter.ts            # multi-sink error/status reporter
@@ -492,7 +505,7 @@ src/
     └── test-fix-loop.ts       # evaluator built-in (gate: npm test)
 
 docs/
-├── BRD.md / PRD.md            # business and product requirements for v0.4
+├── BRD.md / PRD.md            # business and product requirements
 ├── ../EPIC.md                 # implementation epic and acceptance criteria
 ├── workflow-spec.md           # authoritative spec for the 0.2.0 design
 ├── spec-v0.3-addendum.md      # 0.3.0 additions: isolation, gates, stepModels, permissions
@@ -515,6 +528,8 @@ See [`docs/adr/`](docs/adr/) for architecture decision records:
 - [ADR-013](docs/adr/ADR-013-token-budgets-and-compact-checkpoints.md) — Token budgets and compact checkpoints
 - [ADR-014](docs/adr/ADR-014-rust-kernel-with-typescript-opencode-adapters.md) — Superseded Rust-kernel migration proposal
 - [ADR-015](docs/adr/ADR-015-typescript-first-runtime-with-profile-guided-native-optimization.md) — TypeScript-first runtime with profile-guided native optimization
+- [ADR-016](docs/adr/ADR-016-lead-control-plane-and-dedicated-goal-workers.md) — Lead control plane and dedicated goal workers (supersedes ADR-009 continuation)
+- [ADR-017](docs/adr/ADR-017-atomic-generation-hot-reload.md) — Atomic generation hot reload for server and TUI
 
 ## License
 

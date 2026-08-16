@@ -24,6 +24,7 @@ class GoalFake {
   continuations: Array<{ sessionID: string; text: string; model?: object }> = [];
   summaries: string[] = [];
   deletes: string[] = [];
+  aborts: string[] = [];
   private counter = 0;
 
   session: GoalClient["session"] = {
@@ -40,6 +41,10 @@ class GoalFake {
         text: opts.body.parts.map((part) => part.text).join(""),
         model: opts.body.model,
       });
+      return {};
+    },
+    abort: async (opts) => {
+      this.aborts.push(opts.path.id);
       return {};
     },
     messages: async (opts) => ({ data: this.messagesBySession.get(opts.path.id) ?? [] }),
@@ -108,41 +113,45 @@ describe("GoalController", () => {
       model: { providerID: "deepseek", modelID: "deepseek-reasoner" },
       agent: "build",
     });
-    const goal = e.goals.set("lead", "typecheck passes");
+    const goal = await e.goals.start("lead", "typecheck passes");
     expect(goal.evaluatorModel).toEqual({ providerID: "deepseek", modelID: "deepseek-chat" });
-    e.client.messagesBySession.set("lead", [assistant("typecheck exited 0")]);
+    expect(goal.workerSessionID).toBeDefined();
+    e.client.messagesBySession.set(goal.workerSessionID!, [assistant("typecheck exited 0")]);
 
     await e.goals.onSessionIdle("lead");
+    expect(e.store.getGoal("lead")?.turns).toBe(0);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
     const resolved = e.store.getGoal("lead")!;
     expect(resolved.status).toBe("achieved");
     expect(resolved.lastVerdict).toBe("met");
-    expect(resolved.observedTokens).toBe(21);
-    expect(e.client.continuations).toHaveLength(0);
+    expect(resolved.observedTokens).toBe(24);
+    expect(e.client.continuations).toHaveLength(1);
     expect(e.client.deletes).toHaveLength(1);
     e.destroy();
   });
 
-  it("continues the original session on not_met using the worker model", async () => {
+  it("continues the dedicated worker on not_met using the worker model", async () => {
     const e = await setup();
     e.goals.noteSession("lead", {
       model: { providerID: "deepseek", modelID: "deepseek-reasoner" },
       agent: "build",
     });
-    e.goals.set("lead", "all tests pass");
+    const goal = await e.goals.start("lead", "all tests pass");
     e.client.verdict = { verdict: "not_met", reason: "tests were not run" };
-    e.client.messagesBySession.set("lead", [
+    e.client.messagesBySession.set(goal.workerSessionID!, [
       assistant("edited source", 10, [
         { type: "text", text: "edited source" },
         { type: "tool" },
       ]),
     ]);
 
-    await e.goals.onSessionIdle("lead");
+    await e.goals.onSessionIdle(goal.workerSessionID!);
     expect(e.store.getGoal("lead")?.status).toBe("active");
     expect(e.store.getGoal("lead")?.turns).toBe(1);
-    expect(e.client.continuations).toHaveLength(1);
-    expect(e.client.continuations[0].text).toContain("tests were not run");
-    expect(e.client.continuations[0].model).toEqual({
+    expect(e.client.continuations).toHaveLength(2);
+    expect(e.client.continuations[1].sessionID).toBe(goal.workerSessionID);
+    expect(e.client.continuations[1].text).toContain("tests were not run");
+    expect(e.client.continuations[1].model).toEqual({
       providerID: "deepseek",
       modelID: "deepseek-reasoner",
     });
@@ -151,32 +160,32 @@ describe("GoalController", () => {
 
   it("auto-compacts at the soft budget and stops at the hard budget", async () => {
     const e = await setup();
-    e.goals.set("lead", "finish", { softTokens: 100, maxTokens: 500 });
+    const goal = await e.goals.start("lead", "finish", { softTokens: 100, maxTokens: 500 });
     e.client.verdict = { verdict: "not_met", reason: "keep going" };
-    e.client.messagesBySession.set("lead", [assistant("progress", 75)]);
-    await e.goals.onSessionIdle("lead");
-    expect(e.client.summaries).toEqual(["lead"]);
-    expect(e.store.getGoal("lead")?.lastCompactedTokens).toBe(151);
+    e.client.messagesBySession.set(goal.workerSessionID!, [assistant("progress", 75)]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.client.summaries).toEqual([goal.workerSessionID]);
+    expect(e.store.getGoal("lead")?.lastCompactedTokens).toBe(154);
 
-    e.client.messagesBySession.set("lead", [assistant("too much", 300)]);
-    await e.goals.onSessionIdle("lead");
+    e.client.messagesBySession.set(goal.workerSessionID!, [assistant("too much", 300)]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
     expect(e.store.getGoal("lead")?.status).toBe("budget_exhausted");
-    expect(e.client.continuations).toHaveLength(1);
+    expect(e.client.continuations).toHaveLength(2);
     e.destroy();
   });
 
   it("keeps usage monotonic when compaction replaces already-accounted messages", async () => {
     const e = await setup();
-    e.goals.set("lead", "finish", { softTokens: 900, maxTokens: 1000 });
+    const goal = await e.goals.start("lead", "finish", { softTokens: 900, maxTokens: 1000 });
     e.client.verdict = { verdict: "not_met", reason: "keep going" };
-    e.client.messagesBySession.set("lead", [assistant("first", 10, undefined, "msg_1")]);
-    await e.goals.onSessionIdle("lead");
-    expect(e.store.getGoal("lead")?.observedTokens).toBe(21);
+    e.client.messagesBySession.set(goal.workerSessionID!, [assistant("first", 10, undefined, "msg_1")]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.observedTokens).toBe(24);
 
     // Simulate a compacted transcript: msg_1 disappeared and msg_2 is new.
-    e.client.messagesBySession.set("lead", [assistant("second", 10, undefined, "msg_2")]);
-    await e.goals.onSessionIdle("lead");
-    expect(e.store.getGoal("lead")?.observedTokens).toBe(42);
+    e.client.messagesBySession.set(goal.workerSessionID!, [assistant("second", 10, undefined, "msg_2")]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.observedTokens).toBe(48);
     expect(e.store.getGoal("lead")?.observedCost).toBeCloseTo(0.02);
     expect(e.store.getGoal("lead")?.accountedMessageIDs).toEqual(["msg_1", "msg_2"]);
     e.destroy();
@@ -184,11 +193,26 @@ describe("GoalController", () => {
 
   it("supports status and clear without another evaluator turn", async () => {
     const e = await setup();
-    e.goals.set("lead", "ship safely");
+    const goal = await e.goals.start("lead", "ship safely");
     expect(e.goals.status("lead")).toContain("Goal active: ship safely");
-    e.goals.clear("lead");
+    expect(e.goals.status("lead")).toContain(`Worker: running (${goal.workerSessionID})`);
+    await e.goals.clear("lead");
     expect(e.store.getGoal("lead")?.status).toBe("cleared");
+    expect(e.client.aborts).toContain(goal.workerSessionID!);
+    expect(e.client.deletes).toContain(goal.workerSessionID!);
     expect(e.goals.status("missing")).toBe("No goal set.");
+    e.destroy();
+  });
+
+  it("persists steering and delivers it to the worker without touching the lead", async () => {
+    const e = await setup();
+    const goal = await e.goals.start("lead", "ship safely");
+    await e.goals.steer("lead", "run the browser test before declaring success");
+    const steered = e.store.getGoal("lead")!;
+    expect(steered.steering.at(-1)?.text).toContain("browser test");
+    expect(steered.steering.at(-1)?.deliveredTo).toEqual([goal.workerSessionID!]);
+    expect(e.client.continuations.at(-1)?.sessionID).toBe(goal.workerSessionID);
+    expect(e.client.continuations.at(-1)?.text).toContain("browser test");
     e.destroy();
   });
 });

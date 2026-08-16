@@ -2,7 +2,7 @@
 
 **Status:** Complete
 **Owner:** Orch maintainers
-**Target:** v0.4.0
+**Target:** v0.6.0
 **Started:** 2026-08-16
 
 ## Outcome
@@ -166,6 +166,20 @@ and exposes durable progress and controls after the initiating turn ends.
 - [x] Retain the Rust crate and comparison benchmark as reproducible research,
       without adding an N-API bridge, native artifact matrix, or runtime
       fallback.
+
+## Follow-on epic: Lead control plane, steering, and hot reload (v0.6)
+
+- [x] Move goal execution out of the lead conversation into a dedicated worker.
+- [x] Route worker idle/error events without letting lead idle advance goals.
+- [x] Add persisted goal and workflow steering with immediate best-effort delivery.
+- [x] Add goal pause/resume/steer/clear and workflow steer controls.
+- [x] Inject a bounded live control snapshot into lead system context only.
+- [x] Show goal worker state and agent count in the multi-row prompt indicator.
+- [x] Count all disjoint token categories, including cache reads and writes.
+- [x] Publish atomic bundled generations and reload server/TUI lifecycles.
+- [x] Prove the installed server, TUI statusline, reload, steering, recovery,
+      and paid/live provider paths end to end.
+- [ ] Rebuild local installations, commit, and push the verified release.
 
 Future native work is not part of this epic. It requires production-like
 profiling, a bounded hotspot, a new ADR, full behavioral parity, portable

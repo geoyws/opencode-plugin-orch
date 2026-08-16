@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { createSignal, For, onCleanup, Show } from "solid-js";
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import type { Snapshot, Run } from "./state/schemas.js";
+import { tokenTotal } from "./core/usage.js";
 
 function readSnapshot(directory: string): Snapshot | undefined {
   const storeDir = path.join(directory, ".opencode", "plugin-orch");
@@ -25,17 +26,13 @@ function createSnapshot(directory: string): () => Snapshot | undefined {
   return snapshot;
 }
 
-function runTokens(run: Run): string {
+export function runTokens(run: Run): string {
   let total = 0;
   let known = false;
   for (const step of Object.values(run.steps)) {
     if (!step.usage) continue;
     known = true;
-    total +=
-      step.usage.input +
-      step.usage.output +
-      step.usage.reasoning +
-      step.usage.cacheWrite;
+    total += tokenTotal(step.usage);
   }
   return known ? `${total}${run.config.maxTokens ? `/${run.config.maxTokens}` : ""}` : "unknown";
 }
@@ -62,10 +59,24 @@ export function activityLines(
   now = Date.now()
 ): string[] {
   const lines: string[] = [];
-  const goal = sessionID ? snapshot?.goals?.[sessionID] : undefined;
-  if (goal?.status === "active") {
+  const goals = sessionID
+    ? snapshot?.goals?.[sessionID]
+      ? [snapshot.goals[sessionID]]
+      : []
+    : Object.values(snapshot?.goals ?? {}).filter(
+        (goal) => goal.status === "active" || goal.status === "paused"
+      );
+  for (const goal of goals) {
+    if (goal.status !== "active" && goal.status !== "paused") continue;
+    const goalAgents =
+      goal.status === "active" &&
+      (goal.workerStatus === "running" || goal.workerStatus === "evaluating")
+        ? 1
+        : 0;
     lines.push(
-      `goal active ${goal.turns}/${goal.maxTurns} · ${goal.observedTokens ?? "?"}/${goal.maxTokens} tok`
+      `goal ${goal.status} ${goal.turns}/${goal.maxTurns} · worker ${goal.workerStatus ?? "unknown"} · ` +
+        `${goalAgents} ${goalAgents === 1 ? "agent" : "agents"} · ` +
+        `${goal.observedTokens ?? "unknown"}/${goal.maxTokens} tok`
     );
   }
 
@@ -80,7 +91,7 @@ export function activityLines(
     lines.push(
       `${run.workflow} · ${run.status} · ${formatElapsed(now - run.createdAt)} elapsed · ` +
         `${agents} ${agents === 1 ? "agent" : "agents"}` +
-        `${tokens === "unknown" ? "" : ` · ${tokens} tok`}`
+        ` · ${tokens} tok`
     );
   }
   if (activeRuns.length > 1) {
@@ -140,7 +151,7 @@ function Dashboard(props: { directory: string; text: unknown; muted: unknown; ac
           <For each={goals()}>
             {(goal) => (
               <text fg={props.text as never}>
-                [{goal.status}] {goal.condition} · turns {goal.turns}/{goal.maxTurns} · tokens {goal.observedTokens ?? "unknown"}/{goal.maxTokens}
+                [{goal.status}] {goal.condition} · worker {goal.workerStatus ?? "unknown"} · turns {goal.turns}/{goal.maxTurns} · tokens {goal.observedTokens ?? "unknown"}/{goal.maxTokens}
               </text>
             )}
           </For>

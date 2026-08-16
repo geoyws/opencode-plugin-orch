@@ -1,15 +1,15 @@
 # Product Requirements Document: Goal mode and dynamic workflows
 
-**Status:** v0.4 implemented; v0.5 reliability and observability hardening
+**Status:** v0.6 lead-control and local-reload hardening
 **Date:** 2026-08-16
-**Target release:** v0.4.0
+**Target release:** v0.6.0
 
 ## Product definition
 
 Orch adds two related control planes to OpenCode:
 
-- **Goal mode:** a session-scoped completion loop evaluated independently after
-  each turn.
+- **Goal mode:** a session-scoped lead/control plane backed by a dedicated
+  completion worker that is evaluated independently after each worker turn.
 - **Dynamic workflows:** durable, validated orchestration plans that coordinate
   background agent sessions without placing every intermediate result into the
   lead conversation.
@@ -22,26 +22,33 @@ observable through tools, slash commands, and an optional TUI.
 ### Goal commands and tool
 
 - Register `/goal $ARGUMENTS` through the OpenCode config hook.
-- Expose `orch_goal` with `set`, `status`, and `clear` actions for models and
-  non-TUI clients.
+- Expose `orch_goal` with `set`, `status`, `pause`, `resume`, `steer`, and
+  `clear` actions for models and non-TUI clients.
 - A condition is 1-4,000 characters.
 - One active goal is allowed per session; setting another replaces it.
 - `clear`, `stop`, `off`, `reset`, `none`, and `cancel` clear the goal.
 - With no condition, return current or most recently resolved goal status.
 
-### Goal evaluation
+### Lead/control-plane and goal evaluation
 
-- Evaluate only the initiating/lead session, never evaluator or workflow-step
-  sessions.
-- Evaluate after `session.idle` when no tracked child work remains.
+- Keep the initiating session free for operator conversation, state inspection,
+  steering, pausing, resuming, and stopping delegated work.
+- Run substantive goal work in one dedicated persisted worker session.
+- Evaluate only the goal worker after its `session.idle`; never evaluate a lead,
+  evaluator, or workflow-step session.
 - Build an evidence packet from bounded recent assistant output plus the latest
   compact checkpoint.
 - Ask the configured evaluator for strict JSON:
   `{ "verdict": "met|not_met|impossible", "reason": "..." }`.
 - On `not_met`, append the evaluator reason and condition to a new prompt in
-  the original session.
+  the dedicated worker session.
 - On `met` or `impossible`, resolve the goal and do not continue.
 - After repeated turns without tool activity, pause with the goal still active.
+- Inject a fresh bounded system snapshot into each lead turn with active goals,
+  workflows, elapsed time, worker/agent counts, tokens, steps, verdicts, and
+  latest steering. Do not add snapshot messages to the transcript.
+- Persist steering and deliver it to an active worker when possible; every
+  later worker prompt must include the durable direction.
 
 ### Goal budgets
 
@@ -87,6 +94,9 @@ observable through tools, slash commands, and an optional TUI.
 - Retry reopens a terminal failed/cancelled run while preserving completed
   steps; the runtime resumes at its first unfinished boundary.
 - Cancel aborts active sessions/commands and retains completed evidence.
+- Steer persists operator direction, delivers it to active model steps when
+  possible, and injects it into every later model step. Shell steps apply it at
+  the next model boundary; cancellation is the immediate-stop control.
 
 ### Token-aware prompt assembly
 
@@ -125,6 +135,9 @@ observable through tools, slash commands, and an optional TUI.
 - The server entrypoint remains functional without a TUI plugin.
 - The TUI entrypoint adds a goal indicator and a workflow route with filters,
   node details, tokens, elapsed time, and controls.
+- The prompt indicator uses multiple rows and shows goal-worker state, goal
+  agent count, per-workflow active agents, elapsed wall time, and truthful token
+  totals including cache reads and writes.
 - Server/TUI communication uses durable read models and authenticated OpenCode
   operations; the TUI must not mutate snapshot files directly.
 
@@ -148,6 +161,20 @@ observable through tools, slash commands, and an optional TUI.
   DeepSeek and other real models.
 - Typecheck and build must pass with strict TypeScript.
 - A TUI load smoke test must verify the separate target entrypoint.
+- E2E must prove lead/worker isolation, dynamic control snapshots, steering,
+  cancellation, restart recovery, and the installed statusline token display.
+
+## Local development and hot reload
+
+- Every successful build publishes uniquely named bundled server and TUI
+  generations behind one atomically switched manifest.
+- `pnpm dev` watches source and retains the last good generation after a failed
+  typecheck or bundle.
+- Server reload disposes the project instance; TUI reload deactivates and
+  reactivates scoped registrations. Timers, process listeners, and stores must
+  not leak across reloads.
+- A plain in-place rebuild is not accepted as hot reload because OpenCode and
+  Bun cache imported module graphs.
 
 ## Release gates
 

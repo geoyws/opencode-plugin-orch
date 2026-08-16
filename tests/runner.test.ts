@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { matchRoute, extractJsonArray } from "../src/core/runner.js";
+import { matchRoute, extractJsonArray, isPassVerdict } from "../src/core/runner.js";
 import {
   makeEnv,
   completePrompt,
@@ -56,6 +56,13 @@ describe("pure helpers", () => {
     // Extraction scans "[" spans from the first "[" in the output.
     expect(() => extractJsonArray("no array here")).toThrow(/no JSON array/);
     expect(() => extractJsonArray("[1, 2")).toThrow(/no valid JSON array/);
+  });
+
+  it("accepts only a PASS-only critic verdict, with an optional timestamp footer", () => {
+    expect(isPassVerdict("PASS")).toBe(true);
+    expect(isPassVerdict("PASS\n\n_2026-08-16 12:30 MYT_")).toBe(true);
+    expect(isPassVerdict("This should PASS after one fix")).toBe(false);
+    expect(isPassVerdict("PASS\nbut there is still a defect")).toBe(false);
   });
 });
 
@@ -258,7 +265,7 @@ describe("evaluator pattern", () => {
     const g2 = await completePrompt(e, "attempt 2 with detail");
     expect(g2.stepID).toBe("generator#2");
     expect(g2.text).toContain("too short, add detail"); // {{feedback}}
-    const c2 = await completePrompt(e, "Looks good. PASS");
+    const c2 = await completePrompt(e, "PASS");
     expect(c2.stepID).toBe("critic#2");
     expect(c2.text).toContain("attempt 2 with detail"); // {{output}}
 
@@ -293,6 +300,21 @@ describe("evaluator pattern", () => {
 });
 
 describe("run control", () => {
+  it("carries durable steering into later workflow agents", async () => {
+    const e = await env();
+    const run = await e.runner.startRun("chain-draft-refine", "x");
+    await waitFor(() => e.client.prompts.length === 1, "draft prompt");
+    const draft = e.client.prompts[0];
+    expect(await e.runner.steer(run.id, "focus on the browser regression")).toBe(1);
+    e.client.setOutput(draft.sessionID, "draft done");
+    await e.runner.onSessionIdle(draft.sessionID);
+    await waitFor(() => e.client.prompts.some((prompt) => prompt.stepID === "refine"));
+    const refine = e.client.prompts.find((prompt) => prompt.stepID === "refine")!;
+    expect(refine.text).toContain("Durable operator steering");
+    expect(refine.text).toContain("focus on the browser regression");
+    await e.runner.cancel(run.id);
+  });
+
   it("cancel aborts in-flight sessions and marks the run cancelled", async () => {
     const e = await env();
     const run = await e.runner.startRun("chain-draft-refine", "x");
@@ -610,17 +632,17 @@ describe("model and output config", () => {
       softTokens: 75,
     });
     await completePrompt(e, "draft", undefined, {
-      usage: { input: 80, output: 25, reasoning: 5, cacheWrite: 2 },
+      usage: { input: 80, output: 25, reasoning: 5, cacheRead: 100, cacheWrite: 2 },
     });
     const done = await waitForRun(e, run.id);
     expect(done.status).toBe("budget_exhausted");
-    expect(done.error).toContain("112/100");
+    expect(done.error).toContain("212/100");
     expect(e.client.prompts).toHaveLength(1);
     expect(done.steps.draft.usage).toEqual({
       input: 80,
       output: 25,
       reasoning: 5,
-      cacheRead: 0,
+      cacheRead: 100,
       cacheWrite: 2,
     });
   });

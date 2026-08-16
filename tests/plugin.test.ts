@@ -95,6 +95,41 @@ describe("plugin()", () => {
     expect(output.parts[0].text).toContain("Goal: all tests pass");
   });
 
+  it("injects live lead controls but excludes goal workers from lead mode", async () => {
+    const client = new FakeClient();
+    const hooks = await plugin(fakeInput(tmp(), client));
+    cleanups.push(() => hooks.dispose?.());
+    await hooks["chat.message"]!(
+      {
+        sessionID: "lead",
+        agent: "build",
+        model: { providerID: "test", modelID: "worker" },
+      },
+      {} as never
+    );
+    const set = (await hooks.tool!.orch_goal.execute(
+      { action: "set", condition: "ship with evidence" },
+      { sessionID: "lead" } as never
+    )) as string;
+    expect(set).toContain("dedicated worker");
+    const workerID = client.prompts[0].sessionID;
+
+    const leadOutput = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]!(
+      { sessionID: "lead", model: {} as never },
+      leadOutput
+    );
+    expect(leadOutput.system.join("\n")).toContain("lead/control-plane mode");
+    expect(leadOutput.system.join("\n")).toContain("ship with evidence");
+
+    const workerOutput = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]!(
+      { sessionID: workerID, model: {} as never },
+      workerOutput
+    );
+    expect(workerOutput.system).toEqual([]);
+  });
+
   it("returns {} without throwing when init fails", async () => {
     // A directory path that is actually a file makes Store.init's mkdir fail.
     const dir = tmp();

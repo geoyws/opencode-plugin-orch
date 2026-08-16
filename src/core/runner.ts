@@ -16,6 +16,7 @@ import {
   worktreePath,
 } from "./worktree.js";
 import type { Reporter } from "./reporter.js";
+import { tokenTotal } from "./usage.js";
 
 // Structural client interface — the subset of the opencode SDK the runner
 // uses. Declared structurally (instead of importing the SDK client type) so
@@ -53,6 +54,7 @@ export interface RunnerClient {
           time?: { completed?: number };
           cost?: number;
           tokens?: {
+            total?: number;
             input?: number;
             output?: number;
             reasoning?: number;
@@ -155,6 +157,18 @@ export function extractJsonArray(text: string): unknown[] {
   throw new Error("planner output contains no valid JSON array");
 }
 
+/** A critic passes only with an explicit PASS-only response.
+ * Some providers append a generated timestamp footer; accept that harmless
+ * footer, but never treat prose merely containing the word PASS as approval.
+ */
+export function isPassVerdict(text: string): boolean {
+  const withoutTimestamp = text.replace(
+    /\n\s*_?\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s+[A-Z]{2,6})?_?\s*$/i,
+    ""
+  );
+  return /^\s*PASS\s*$/i.test(withoutTimestamp);
+}
+
 // Last assistant message's concatenated text parts, or undefined when the
 // session has no assistant message yet.
 function extractLastAssistant(messages: MessagesData):
@@ -171,6 +185,7 @@ function extractLastAssistant(messages: MessagesData):
       const usage =
         tokens || typeof cost === "number"
           ? {
+              ...(tokens?.total === undefined ? {} : { total: tokens.total }),
               input: tokens?.input ?? 0,
               output: tokens?.output ?? 0,
               reasoning: tokens?.reasoning ?? 0,
@@ -286,6 +301,7 @@ export class Runner {
       config,
       plan: def,
       steps: {},
+      steering: [],
       iteration: 0,
       createdAt: Date.now(),
     };
@@ -412,6 +428,51 @@ export class Runner {
     this.deps.store.cancelRun(runID);
     this.wakePaused(runID);
     await Promise.all(aborts);
+  }
+
+  async steer(runID: string, message: string): Promise<number> {
+    const run = this.deps.store.getRun(runID);
+    if (!run) throw new Error(`Run ${runID} not found`);
+    if (run.status !== "running" && run.status !== "paused") {
+      throw new Error(`Run ${runID} is already ${run.status}`);
+    }
+    const text = message.trim();
+    if (!text) throw new Error("steering message must not be empty");
+    if (text.length > 4000) throw new Error("steering message exceeds 4000 characters");
+
+    const deliveredTo: string[] = [];
+    await Promise.all(
+      [...this.pending.entries()]
+        .filter(([, entry]) => entry.runID === runID)
+        .map(async ([sessionID, entry]) => {
+          try {
+            await this.deps.client.session.promptAsync({
+              path: { id: sessionID },
+              query: { directory: entry.directory },
+              body: {
+                parts: [
+                  {
+                    type: "text",
+                    text:
+                      "Operator steering for the active workflow. Apply this direction now " +
+                      `and in your final evidence:\n\n${text}`,
+                  },
+                ],
+              },
+            });
+            deliveredTo.push(sessionID);
+          } catch {
+            // The session may have settled between discovery and delivery.
+            // The persisted note still reaches every later LLM step.
+          }
+        })
+    );
+    this.deps.store.steerRun(runID, {
+      text,
+      createdAt: Date.now(),
+      deliveredTo,
+    });
+    return deliveredTo.length;
   }
 
   pause(runID: string): void {
@@ -821,7 +882,7 @@ export class Runner {
           config,
           iter
         );
-        criticPassed = /\bPASS\b/i.test(critique);
+        criticPassed = isPassVerdict(critique);
       }
 
       // With both a gate and a critic, both must pass to end the loop.
@@ -1032,10 +1093,18 @@ export class Runner {
       // Model resolution: stepModels[step.id] ?? step.model ?? config.model
       // ?? server default.
       const model = config.stepModels?.[stepDef.id] ?? stepDef.model ?? config.model;
+      const currentRun = this.deps.store.getRun(runID);
+      const steering = (currentRun?.steering ?? []).slice(-10);
+      const steeredPrompt =
+        steering.length === 0
+          ? prompt
+          : `${prompt}\n\n## Durable operator steering\n${steering
+              .map((note, index) => `${index + 1}. ${note.text}`)
+              .join("\n")}`;
       await this.deps.client.session.promptAsync({
         path: { id: sessionID },
         body: {
-          parts: [{ type: "text", text: prompt }],
+          parts: [{ type: "text", text: steeredPrompt }],
           agent: stepDef.agent ?? "build",
           ...(model ? { model } : {}),
         },
@@ -1340,11 +1409,7 @@ export class Runner {
     for (const step of steps) {
       if (!step.usage) continue;
       known = true;
-      total +=
-        step.usage.input +
-        step.usage.output +
-        step.usage.reasoning +
-        step.usage.cacheWrite;
+      total += tokenTotal(step.usage);
     }
     return known ? total : undefined;
   }

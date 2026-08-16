@@ -38,10 +38,12 @@ export function createEventHook(deps: {
         case "session.error": {
           const sessionID = event.properties.sessionID;
           if (!sessionID) return;
+          const message = formatSessionError(event.properties.error);
           await runner.onSessionError(
             sessionID,
-            formatSessionError(event.properties.error)
+            message
           );
+          await goals.onSessionError(sessionID, message);
           break;
         }
       }

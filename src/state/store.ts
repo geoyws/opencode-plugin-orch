@@ -237,6 +237,15 @@ export class Store {
         this.runs.set(run.id, { ...run, status: "running" });
         break;
       }
+      case "run_steered": {
+        const run = this.runs.get(d.runID as string);
+        if (!run || !this.runAcceptsStepEvents(run)) break;
+        this.runs.set(run.id, {
+          ...run,
+          steering: [...(run.steering ?? []), d.note as Run["steering"][number]].slice(-20),
+        });
+        break;
+      }
       case "run_budget_exhausted": {
         const run = this.runs.get(d.runID as string);
         if (!run || !this.runAcceptsStepEvents(run)) break;
@@ -320,6 +329,10 @@ export class Store {
 
   resumeRun(runID: string): void {
     this.appendEvent("run_resumed", { runID });
+  }
+
+  steerRun(runID: string, note: Run["steering"][number]): void {
+    this.appendEvent("run_steered", { runID, note });
   }
 
   exhaustRunBudget(runID: string, reason: string): void {

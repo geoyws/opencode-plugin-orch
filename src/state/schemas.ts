@@ -90,6 +90,9 @@ export const StepState = z.object({
   // expose usage; it must never be interpreted as zero.
   usage: z
     .object({
+      // Provider total when available. Category accounting remains the
+      // portable fallback and guards against incomplete provider totals.
+      total: z.number().nonnegative().optional(),
       input: z.number().nonnegative().default(0),
       output: z.number().nonnegative().default(0),
       reasoning: z.number().nonnegative().default(0),
@@ -102,6 +105,15 @@ export const StepState = z.object({
   summary: z.string().optional(),
 });
 export type StepState = z.infer<typeof StepState>;
+
+export const SteeringNote = z.object({
+  text: z.string().min(1).max(4000),
+  createdAt: z.number(),
+  // Sessions that received the note immediately. Future steps still receive
+  // the durable run-level direction as part of their initial prompt.
+  deliveredTo: z.array(z.string()).default([]),
+});
+export type SteeringNote = z.infer<typeof SteeringNote>;
 
 // ── Run ───────────────────────────────────────────────────────────────
 export const Run = z.object({
@@ -117,6 +129,9 @@ export const Run = z.object({
   // Steps appear when they start (keyed by step id, insertion-ordered).
   // Evaluator iterations beyond the first use "<step-id>#<n>" ids.
   steps: z.record(z.string(), StepState).default({}),
+  // Operator direction applied while the run is in flight. This is persisted
+  // so later steps and restart recovery see the same steering context.
+  steering: z.array(SteeringNote).default([]),
   // Evaluator pattern: current loop iteration (1-based). 0 for other patterns.
   iteration: z.number().int().default(0),
   output: z.string().optional(),
@@ -159,6 +174,11 @@ export const GoalState = z.object({
   evaluatorModel: ModelRef.optional(),
   workerModel: ModelRef.optional(),
   workerAgent: z.string().optional(),
+  workerSessionID: z.string().optional(),
+  workerStatus: z
+    .enum(["starting", "running", "evaluating", "idle", "stopped"])
+    .optional(),
+  steering: z.array(SteeringNote).default([]),
   lastVerdict: z.enum(["met", "not_met", "impossible"]).optional(),
   lastReason: z.string().optional(),
   checkpoint: z.string().optional(),

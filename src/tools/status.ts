@@ -1,6 +1,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import type { Store } from "../state/store.js";
 import type { WorkflowRegistry } from "../workflows/index.js";
+import { tokenTotal } from "../core/usage.js";
 
 function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -44,11 +45,7 @@ export function createStatusTool(
         const usage = Object.values(run.steps).reduce(
           (sum, step) =>
             step.usage
-              ? sum +
-                step.usage.input +
-                step.usage.output +
-                step.usage.reasoning +
-                step.usage.cacheWrite
+              ? sum + tokenTotal(step.usage)
               : sum,
           0
         );
@@ -67,6 +64,16 @@ export function createStatusTool(
             costs.length ? costs.reduce((sum, cost) => sum + cost, 0) : "unknown"
           }${run.config.maxCost ? `/${run.config.maxCost}` : ""}`
         );
+        if ((run.steering ?? []).length > 0) {
+          lines.push("Steering:");
+          for (const note of (run.steering ?? []).slice(-5)) {
+            lines.push(
+              `  - ${note.text} · delivered to ${note.deliveredTo.length} active agent${
+                note.deliveredTo.length === 1 ? "" : "s"
+              }`
+            );
+          }
+        }
 
         // Steps present in the run record (started or finished).
         const steps = Object.values(run.steps);
@@ -82,7 +89,7 @@ export function createStatusTool(
           lines.push(`  [${s.status}] ${s.id}${timing}${err}`);
           if (s.usage) {
             lines.push(
-              `    tokens: in=${s.usage.input} out=${s.usage.output} reasoning=${s.usage.reasoning} cache-read=${s.usage.cacheRead} cache-write=${s.usage.cacheWrite}`
+              `    tokens: total=${tokenTotal(s.usage)} in=${s.usage.input} out=${s.usage.output} reasoning=${s.usage.reasoning} cache-read=${s.usage.cacheRead} cache-write=${s.usage.cacheWrite}`
             );
           }
           if (s.summary && s.output && s.summary.length < s.output.length) {

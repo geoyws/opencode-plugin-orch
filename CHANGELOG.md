@@ -6,6 +6,31 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### v0.6 lead control plane and local hot reload
+
+- Moved goal implementation into a dedicated worker session. The initiating
+  conversation is now a lead/control plane with a fresh bounded snapshot of
+  active goals, workflows, elapsed time, agents, tokens, steps, verdicts, and
+  steering on every lead turn.
+- Added persisted goal/workflow steering plus goal pause/resume/steer/clear and
+  workflow steering. Active model agents receive direction immediately when
+  possible; future steps always receive the durable note.
+- Fixed status and budget accounting to include input, output, reasoning,
+  cache-read, and cache-write categories, while preserving `unknown` when no
+  provider usage exists. The multi-row TUI now shows goal worker state/count
+  and per-workflow token totals.
+- Added atomic generation builds and `pnpm dev` hot reload for both server and
+  TUI entrypoints. Failed builds retain the last good generation.
+- Hardened evaluator approval to a PASS-only verdict and strengthened the
+  test-author workflow against tautological assertions after paid IFCA
+  DeepSeek live tests found both weaknesses.
+- Added ADR-016/017 and updated BRD, PRD, and the v0.6 epic. Orch remains
+  provider-neutral; DeepSeek Harness integration is explicitly a separate
+  plugin concern.
+- Verified 165 non-live tests, including 12 real-OpenCode E2E scenarios, two Rust
+  fixture tests, all three local OpenCode server profiles, and all four paid
+  IFCA DeepSeek workflow scenarios.
+
 ### v0.5 CLI lifecycle and runtime efficiency
 
 - Fixed real `opencode run` workflows aborting when the lead turn exited by

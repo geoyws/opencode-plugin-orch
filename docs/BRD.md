@@ -47,9 +47,10 @@ progress view.
 
 ### BR-1: Goal-directed autonomy
 
-The user can set one active completion condition per session. Orch independently
-evaluates the evidence after each turn and continues until the condition is met,
-impossible, stalled, cleared, or budget-limited.
+The user can set one active completion condition per lead session. Orch performs
+the work in a dedicated worker, independently evaluates its evidence after each
+worker turn, and continues until the condition is met, impossible, stalled,
+cleared, or budget-limited. The lead remains available for new instructions.
 
 ### BR-2: Dynamic and reusable workflows
 
@@ -83,8 +84,10 @@ reported as complete merely because state exists.
 
 ### BR-7: Observable progress
 
-Commands, tools, and an optional TUI show current work, elapsed time, nodes,
-tokens, budgets, compact checkpoints, failures, and resulting evidence.
+Commands, tools, a live lead snapshot, and an optional multi-row TUI show
+current work, elapsed time, worker/agent counts, nodes, tokens, budgets, compact
+checkpoints, steering, failures, and resulting evidence. The operator can steer
+or stop inner work without entering its transcript.
 
 ### BR-8: Runtime efficiency and portability
 
@@ -94,6 +97,12 @@ TypeScript first. A bounded native implementation is considered only when
 production-like profiling identifies material local resource cost, differential
 fixtures prove parity, and release benchmarks prove at least 2x throughput or
 50% lower CPU time after integration overhead.
+
+### BR-9: Fast local iteration
+
+Local plugin development supports atomic hot reload of both server and TUI code.
+A failed build leaves the last working generation active, and reload does not
+leak timers, listeners, or stale scoped UI registrations.
 
 ## Success measures
 
@@ -119,3 +128,5 @@ fixtures prove parity, and release benchmarks prove at least 2x throughput or
 - Unlimited unattended execution.
 - Replacing OpenCode permissions or managed policy.
 - Exact behavioral or visual cloning of proprietary implementations.
+- Owning or integrating the separate DeepSeek Harness runtime; Orch uses only
+  provider/model references that OpenCode already exposes.

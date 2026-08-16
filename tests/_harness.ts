@@ -44,7 +44,14 @@ export class FakeClient {
     {
       text: string;
       completed: boolean;
-      usage?: { input?: number; output?: number; reasoning?: number; cacheWrite?: number };
+      usage?: {
+        total?: number;
+        input?: number;
+        output?: number;
+        reasoning?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+      };
     }
   >();
 
@@ -93,10 +100,14 @@ export class FakeClient {
               ...(out.usage
                 ? {
                     tokens: {
+                      total: out.usage.total,
                       input: out.usage.input,
                       output: out.usage.output,
                       reasoning: out.usage.reasoning,
-                      cache: { write: out.usage.cacheWrite },
+                      cache: {
+                        read: out.usage.cacheRead,
+                        write: out.usage.cacheWrite,
+                      },
                     },
                   }
                 : {}),
@@ -117,7 +128,14 @@ export class FakeClient {
     text: string,
     opts?: {
       completed?: boolean;
-      usage?: { input?: number; output?: number; reasoning?: number; cacheWrite?: number };
+      usage?: {
+        total?: number;
+        input?: number;
+        output?: number;
+        reasoning?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+      };
     }
   ): void {
     this.outputs.set(sessionID, {
@@ -225,7 +243,16 @@ export async function completePrompt(
   env: Env,
   output: string,
   at?: number,
-  opts?: { usage?: { input?: number; output?: number; reasoning?: number; cacheWrite?: number } }
+  opts?: {
+    usage?: {
+      total?: number;
+      input?: number;
+      output?: number;
+      reasoning?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+    };
+  }
 ): Promise<PromptRecord> {
   const idx = at ?? env.cursor;
   await waitFor(

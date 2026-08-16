@@ -114,6 +114,26 @@ describe("Store event append", () => {
 });
 
 describe("Store snapshot + replay", () => {
+  it("preserves workflow steering across restart recovery", async () => {
+    const { store, dir } = await makeStore();
+    store.createRun(makeRun("run_steer"));
+    store.steerRun("run_steer", {
+      text: "verify the live boundary",
+      createdAt: Date.now(),
+      deliveredTo: ["sess_1"],
+    });
+    store.destroy();
+    stores.pop();
+
+    const store2 = new Store(dir);
+    stores.push(store2);
+    await store2.init();
+    expect(store2.getRun("run_steer")?.status).toBe("paused");
+    expect(store2.getRun("run_steer")?.steering.at(-1)?.text).toBe(
+      "verify the live boundary"
+    );
+  });
+
   it("snapshot on destroy preserves state across reload", async () => {
     const { store, dir } = await makeStore();
     store.createRun(makeRun("run_d1"));

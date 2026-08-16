@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { GoalState, ModelRef } from "../state/schemas.js";
 import type { Store } from "../state/store.js";
 import type { Reporter } from "./reporter.js";
+import { tokenTotal } from "./usage.js";
 
 type MessageRecord = {
   info: {
@@ -9,6 +10,7 @@ type MessageRecord = {
     role: string;
     cost?: number;
     tokens?: {
+      total?: number;
       input?: number;
       output?: number;
       reasoning?: number;
@@ -44,6 +46,10 @@ export interface GoalClient {
         model?: ModelRef;
         agent?: string;
       };
+      query?: { directory?: string };
+    }): Promise<unknown>;
+    abort(opts: {
+      path: { id: string };
       query?: { directory?: string };
     }): Promise<unknown>;
     messages(opts: {
@@ -150,12 +156,14 @@ function observedUsage(messages: MessageRecord[], accounted: string[]): {
     const usage = message.info.tokens;
     if (usage) {
       tokenKnown = true;
-      tokens +=
-        (usage.input ?? 0) +
-        (usage.output ?? 0) +
-        (usage.reasoning ?? 0) +
-        (usage.cache?.write ?? 0);
-      // Cache reads are observed but do not represent newly generated context.
+      tokens += tokenTotal({
+        total: usage.total,
+        input: usage.input,
+        output: usage.output,
+        reasoning: usage.reasoning,
+        cacheRead: usage.cache?.read,
+        cacheWrite: usage.cache?.write,
+      });
     }
     if (typeof message.info.cost === "number") {
       costKnown = true;
@@ -215,7 +223,7 @@ export class GoalController {
     }
   }
 
-  set(sessionID: string, condition: string, options: GoalSetOptions = {}): GoalState {
+  private set(sessionID: string, condition: string, options: GoalSetOptions = {}): GoalState {
     const clean = condition.trim();
     if (!clean) throw new Error("goal condition must not be empty");
     if (clean.length > 4000) throw new Error("goal condition exceeds 4000 characters");
@@ -241,24 +249,113 @@ export class GoalController {
       evaluatorModel: options.evaluatorModel ?? this.deps.options.evaluatorModel,
       workerModel: meta?.model,
       workerAgent: meta?.agent,
+      workerStatus: "starting",
+      steering: [],
       accountedMessageIDs: [],
     };
     this.deps.store.setGoal(goal);
     return goal;
   }
 
-  clear(sessionID: string): GoalState | undefined {
+  async start(
+    sessionID: string,
+    condition: string,
+    options: GoalSetOptions = {}
+  ): Promise<GoalState> {
+    const previous = this.deps.store.getGoal(sessionID);
+    if (previous?.status === "active" || previous?.status === "paused") {
+      await this.stopWorker(previous);
+    }
+    const goal = this.set(sessionID, condition, options);
+    return this.launchWorker(goal);
+  }
+
+  async clear(sessionID: string): Promise<GoalState | undefined> {
     const goal = this.deps.store.getGoal(sessionID);
-    if (!goal || goal.status !== "active") return goal;
+    if (!goal || (goal.status !== "active" && goal.status !== "paused")) return goal;
+    await this.stopWorker(goal);
     const resolved: GoalState = {
       ...goal,
       status: "cleared",
+      workerStatus: "stopped",
       updatedAt: Date.now(),
       completedAt: Date.now(),
       lastReason: "cleared by user",
     };
     this.deps.store.resolveGoal(resolved);
     return resolved;
+  }
+
+  async pause(sessionID: string): Promise<GoalState> {
+    const goal = this.requireControllableGoal(sessionID);
+    if (goal.status !== "active") throw new Error(`goal is ${goal.status}, not active`);
+    if (goal.workerSessionID) {
+      await Promise.resolve(
+        this.deps.client.session.abort({
+          path: { id: goal.workerSessionID },
+          query: { directory: this.deps.directory },
+        })
+      ).catch(() => {});
+    }
+    const paused: GoalState = {
+      ...goal,
+      status: "paused",
+      workerStatus: "idle",
+      updatedAt: Date.now(),
+      lastReason: "paused by user",
+    };
+    this.deps.store.updateGoal(paused);
+    return paused;
+  }
+
+  async resume(sessionID: string): Promise<GoalState> {
+    const goal = this.requireControllableGoal(sessionID);
+    if (goal.status !== "paused") throw new Error(`goal is ${goal.status}, not paused`);
+    const resumed: GoalState = {
+      ...goal,
+      status: "active",
+      workerStatus: goal.workerSessionID ? "running" : "starting",
+      updatedAt: Date.now(),
+      completedAt: undefined,
+      lastReason: "resumed by user",
+    };
+    this.deps.store.updateGoal(resumed);
+    if (!resumed.workerSessionID) return this.launchWorker(resumed);
+    await this.promptWorker(
+      resumed,
+      `Resume autonomous work toward the goal. Apply all durable steering and surface fresh evidence.\n\nGoal: ${resumed.condition}`
+    );
+    return this.deps.store.getGoal(sessionID) ?? resumed;
+  }
+
+  async steer(sessionID: string, message: string): Promise<GoalState> {
+    const goal = this.requireControllableGoal(sessionID);
+    const text = message.trim();
+    if (!text) throw new Error("steering message must not be empty");
+    if (text.length > 4000) throw new Error("steering message exceeds 4000 characters");
+    const note = {
+      text,
+      createdAt: Date.now(),
+      deliveredTo: goal.status === "active" && goal.workerSessionID ? [goal.workerSessionID] : [],
+    };
+    const steered: GoalState = {
+      ...goal,
+      steering: [...(goal.steering ?? []), note].slice(-20),
+      updatedAt: Date.now(),
+    };
+    this.deps.store.updateGoal(steered);
+    if (goal.status === "active" && goal.workerSessionID) {
+      try {
+        await this.promptWorker(
+          steered,
+          `Operator steering for the active goal. Apply this direction immediately and preserve it in future work:\n\n${text}\n\nGoal: ${goal.condition}`
+        );
+      } catch {
+        // Persisted steering remains authoritative even if an in-flight
+        // worker settled during delivery.
+      }
+    }
+    return this.deps.store.getGoal(sessionID) ?? steered;
   }
 
   status(sessionID: string): string {
@@ -271,6 +368,9 @@ export class GoalController {
         : `${goal.observedTokens}/${goal.maxTokens}`;
     const lines = [
       `Goal ${goal.status}: ${goal.condition}`,
+      `Worker: ${goal.workerStatus ?? "unknown"}${
+        goal.workerSessionID ? ` (${goal.workerSessionID})` : ""
+      }`,
       `Turns: ${goal.turns}/${goal.maxTurns}`,
       `Elapsed: ${Math.floor(elapsed / 1000)}s`,
       `Observed tokens: ${tokens}`,
@@ -287,13 +387,16 @@ export class GoalController {
     if (goal.lastCompactedTokens !== undefined) {
       lines.push(`Last auto-compaction: ${goal.lastCompactedTokens} tokens`);
     }
+    if ((goal.steering ?? []).length > 0) {
+      lines.push(`Latest steering: ${goal.steering.at(-1)?.text}`);
+    }
     return lines.join("\n");
   }
 
-  handleGoalCommand(
+  async handleGoalCommand(
     sessionID: string,
     args: string
-  ): { prompt: string; status: string } {
+  ): Promise<{ prompt: string; status: string }> {
     const clean = args.trim();
     if (!clean) {
       const status = this.status(sessionID);
@@ -301,17 +404,34 @@ export class GoalController {
     }
     if (CLEAR_ALIASES.has(clean.toLowerCase())) {
       const before = this.deps.store.getGoal(sessionID);
-      this.clear(sessionID);
-      const status = before?.status === "active" ? `Goal cleared: ${before.condition}` : "No goal set.";
+      await this.clear(sessionID);
+      const status = before && ["active", "paused"].includes(before.status)
+        ? `Goal cleared: ${before.condition}`
+        : "No goal set.";
       return { prompt: `Report this result exactly:\n\n${status}`, status };
     }
-    const goal = this.set(sessionID, clean);
+    if (clean.toLowerCase() === "pause") {
+      const goal = await this.pause(sessionID);
+      const status = `Goal paused: ${goal.condition}`;
+      return { prompt: `Report this result exactly:\n\n${status}`, status };
+    }
+    if (clean.toLowerCase() === "resume") {
+      const goal = await this.resume(sessionID);
+      const status = `Goal resumed: ${goal.condition}`;
+      return { prompt: `Report this result exactly:\n\n${status}`, status };
+    }
+    if (clean.toLowerCase().startsWith("steer ")) {
+      const goal = await this.steer(sessionID, clean.slice(6));
+      const status = `Goal worker steered: ${goal.steering.at(-1)?.text}`;
+      return { prompt: `Report this result exactly:\n\n${status}`, status };
+    }
+    const goal = await this.start(sessionID, clean);
     return {
       prompt:
-        `Work autonomously toward this active Orch goal now. Surface concrete evidence ` +
-        `for the independent evaluator at the end of the turn. Do not claim success ` +
-        `without observing the requested boundary.\n\nGoal: ${goal.condition}`,
-      status: `Goal active: ${goal.condition}`,
+        `Report that Orch accepted the goal and launched a dedicated worker. Stay in ` +
+        `the lead conversation for status, steering, and control; do not duplicate the ` +
+        `worker's implementation here.\n\nGoal: ${goal.condition}\nWorker: ${goal.workerSessionID}`,
+      status: `Goal active in worker ${goal.workerSessionID}: ${goal.condition}`,
     };
   }
 
@@ -319,14 +439,34 @@ export class GoalController {
     return this.evaluatorSessions.has(sessionID);
   }
 
+  isWorkerSession(sessionID: string): boolean {
+    return this.deps.store.listGoals().some(
+      (goal) => goal.workerSessionID === sessionID && ["active", "paused"].includes(goal.status)
+    );
+  }
+
   async onSessionIdle(sessionID: string): Promise<void> {
-    const goal = this.deps.store.getGoal(sessionID);
+    const goal = this.deps.store
+      .listGoals()
+      .find((candidate) => candidate.workerSessionID === sessionID);
     if (!goal || goal.status !== "active") return;
-    if (this.evaluating.has(sessionID) || this.evaluatorSessions.has(sessionID)) return;
-    this.evaluating.add(sessionID);
+    if (this.evaluating.has(goal.sessionID) || this.evaluatorSessions.has(sessionID)) return;
+    this.evaluating.add(goal.sessionID);
     try {
       await this.evaluate(goal);
     } catch (err) {
+      const latest = this.deps.store.getGoal(goal.sessionID);
+      if (latest?.status === "active") {
+        this.deps.store.updateGoal({
+          ...latest,
+          status: "paused",
+          workerStatus: "idle",
+          updatedAt: Date.now(),
+          lastReason: `evaluation deferred: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        });
+      }
       this.deps.reporter.warn(
         "[orch]",
         `goal evaluation for ${sessionID} deferred: ${
@@ -334,13 +474,120 @@ export class GoalController {
         }`
       );
     } finally {
-      this.evaluating.delete(sessionID);
+      this.evaluating.delete(goal.sessionID);
     }
   }
 
+  async onSessionError(sessionID: string, message: string): Promise<void> {
+    const goal = this.deps.store
+      .listGoals()
+      .find((candidate) => candidate.workerSessionID === sessionID);
+    if (!goal || goal.status !== "active") return;
+    this.deps.store.updateGoal({
+      ...goal,
+      status: "paused",
+      workerStatus: "idle",
+      updatedAt: Date.now(),
+      lastReason: `worker error: ${message}`,
+    });
+  }
+
+  private requireControllableGoal(sessionID: string): GoalState {
+    const goal = this.deps.store.getGoal(sessionID);
+    if (!goal) throw new Error("No goal set.");
+    if (goal.status !== "active" && goal.status !== "paused") {
+      throw new Error(`goal is ${goal.status} and can no longer be controlled`);
+    }
+    return goal;
+  }
+
+  private async launchWorker(original: GoalState): Promise<GoalState> {
+    const created = await this.deps.client.session.create({
+      body: { title: `orch-goal/${original.sessionID}/worker` },
+      query: { directory: this.deps.directory },
+    });
+    const workerSessionID = created.data?.id;
+    if (!workerSessionID) throw new Error("failed to create goal worker session");
+    const goal: GoalState = {
+      ...original,
+      workerSessionID,
+      workerStatus: "running",
+      updatedAt: Date.now(),
+    };
+    this.deps.store.updateGoal(goal);
+    try {
+      await this.promptWorker(
+        goal,
+        `You are the dedicated Orch worker for a lead conversation. Perform the substantive ` +
+          `work autonomously in this session so the lead remains clear for operator status and ` +
+          `steering. Use tools, verify the requested boundary, manage context with compact ` +
+          `checkpoints, and report concrete evidence. Do not create or replace the goal.\n\n` +
+          `Goal: ${goal.condition}`
+      );
+    } catch (err) {
+      this.deps.store.updateGoal({
+        ...goal,
+        status: "paused",
+        workerStatus: "idle",
+        updatedAt: Date.now(),
+        lastReason: `worker launch failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      throw err;
+    }
+    return this.deps.store.getGoal(goal.sessionID) ?? goal;
+  }
+
+  private async promptWorker(goal: GoalState, text: string): Promise<void> {
+    if (!goal.workerSessionID) throw new Error("goal worker session is not available");
+    const steering = (goal.steering ?? []).slice(-10);
+    const prompt =
+      steering.length === 0
+        ? text
+        : `${text}\n\n## Durable operator steering\n${steering
+            .map((note, index) => `${index + 1}. ${note.text}`)
+            .join("\n")}`;
+    this.deps.store.updateGoal({
+      ...goal,
+      workerStatus: "running",
+      updatedAt: Date.now(),
+    });
+    await this.deps.client.session.promptAsync({
+      path: { id: goal.workerSessionID },
+      query: { directory: this.deps.directory },
+      body: {
+        ...(goal.workerModel ? { model: goal.workerModel } : {}),
+        ...(goal.workerAgent ? { agent: goal.workerAgent } : { agent: "build" }),
+        parts: [{ type: "text", text: prompt }],
+      },
+    });
+  }
+
+  private async stopWorker(goal: GoalState): Promise<void> {
+    if (!goal.workerSessionID) return;
+    await Promise.resolve(
+      this.deps.client.session.abort({
+        path: { id: goal.workerSessionID },
+        query: { directory: this.deps.directory },
+      })
+    ).catch(() => {});
+    await Promise.resolve(
+      this.deps.client.session.delete({
+        path: { id: goal.workerSessionID },
+        query: { directory: this.deps.directory },
+      })
+    ).catch(() => {});
+  }
+
   private async evaluate(original: GoalState): Promise<void> {
+    if (!original.workerSessionID) throw new Error("goal has no worker session");
+    const workerSessionID = original.workerSessionID;
+    this.deps.store.updateGoal({
+      ...original,
+      workerStatus: "evaluating",
+      updatedAt: Date.now(),
+    });
     const response = await this.deps.client.session.messages({
-      path: { id: original.sessionID },
+      path: { id: workerSessionID },
       query: { directory: this.deps.directory, limit: 60 },
     });
     const messages = response.data ?? [];
@@ -371,6 +618,7 @@ export class GoalController {
       goal = {
         ...goal,
         status: "budget_exhausted",
+        workerStatus: "stopped",
         completedAt: now,
         lastReason: limitReason,
       };
@@ -389,7 +637,7 @@ export class GoalController {
         goal.workerModel;
       if (model && this.deps.client.session.summarize) {
         await this.deps.client.session.summarize({
-          path: { id: goal.sessionID },
+          path: { id: workerSessionID },
           body: model,
           query: { directory: this.deps.directory },
         });
@@ -438,8 +686,11 @@ export class GoalController {
     }
 
     const usedTools = latestAssistantUsedTools(messages);
+    const current = this.deps.store.getGoal(goal.sessionID);
+    if (!current || current.status !== "active") return;
     goal = {
       ...goal,
+      steering: current.steering ?? goal.steering,
       turns: goal.turns + 1,
       noProgressTurns: usedTools ? 0 : goal.noProgressTurns + 1,
       lastVerdict: verdict.verdict,
@@ -452,6 +703,7 @@ export class GoalController {
       this.deps.store.resolveGoal({
         ...goal,
         status: verdict.verdict === "met" ? "achieved" : "impossible",
+        workerStatus: "stopped",
         completedAt: Date.now(),
       });
       return;
@@ -460,29 +712,19 @@ export class GoalController {
       this.deps.store.resolveGoal({
         ...goal,
         status: "paused",
+        workerStatus: "idle",
         lastReason: `paused after ${goal.noProgressTurns} turns without tool activity: ${verdict.reason}`,
       });
       return;
     }
 
     this.deps.store.updateGoal(goal);
-    await this.deps.client.session.promptAsync({
-      path: { id: goal.sessionID },
-      query: { directory: this.deps.directory },
-      body: {
-        ...(goal.workerModel ? { model: goal.workerModel } : {}),
-        ...(goal.workerAgent ? { agent: goal.workerAgent } : {}),
-        parts: [
-          {
-            type: "text",
-            text:
-              `Continue working autonomously toward the active goal. The independent ` +
-              `evaluator said it is not yet met: ${verdict.reason}\n\n` +
-              `Goal: ${goal.condition}\n\nUse tools and surface fresh concrete evidence.`,
-          },
-        ],
-      },
-    });
+    await this.promptWorker(
+      goal,
+      `Continue working autonomously toward the active goal. The independent ` +
+        `evaluator said it is not yet met: ${verdict.reason}\n\n` +
+        `Goal: ${goal.condition}\n\nUse tools and surface fresh concrete evidence.`
+    );
   }
 
   private async disabledTools(): Promise<Record<string, boolean>> {

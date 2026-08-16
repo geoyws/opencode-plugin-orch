@@ -37,6 +37,7 @@ import {
   waitForTerminalRun,
   type Verdict,
 } from "./_live-harness.js";
+import { isPassVerdict } from "../src/core/runner.js";
 
 const LIVE = process.env.ORCH_LIVE === "1";
 const SKIP = !LIVE || !DIST_EXISTS;
@@ -290,7 +291,7 @@ describe.skipIf(SKIP)("e2e live: LLM-as-judge (ORCH_LIVE=1, costs real tokens)",
       // exists; if the generator fixed the bug in its first draft and the
       // critic passed immediately, judge the final fix instead.
       const critiques = [...run.steps.values()]
-        .filter((s) => s.id.startsWith("critic") && s.output && !/^\s*PASS\s*$/i.test(s.output))
+        .filter((s) => s.id.startsWith("critic") && s.output && !isPassVerdict(s.output))
         .map((s) => `## Critique (step ${s.id})\n${s.output}`)
         .join("\n\n");
       let verdict: Verdict;

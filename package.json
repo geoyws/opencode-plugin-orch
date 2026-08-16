@@ -1,7 +1,7 @@
 {
   "name": "opencode-plugin-orch",
-  "version": "0.4.0",
-  "description": "Provider-neutral goal mode and token-aware workflow engine for OpenCode, including DeepSeek routing",
+  "version": "0.6.0",
+  "description": "Provider-neutral goal mode and token-aware workflow engine for OpenCode",
   "type": "module",
   "license": "MIT",
   "exports": {
@@ -14,16 +14,17 @@
       "types": "./dist/index.d.ts"
     },
     "./tui": {
-      "import": "./dist/tui.js",
-      "types": "./dist/tui.d.ts"
+      "import": "./dist/tui-wrapper.js",
+      "types": "./dist/tui-wrapper.d.ts"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "prepare": "tsc",
+    "build": "bun scripts/build.ts",
+    "prepare": "bun scripts/build.ts",
+    "dev": "bun scripts/dev.ts",
     "typecheck": "tsc --noEmit",
     "native:build": "cargo build --release --locked -p orch-core",
     "native:test": "cargo test --locked -p orch-core",

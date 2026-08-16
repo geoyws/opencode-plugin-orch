@@ -1,6 +1,6 @@
 # ADR-009: Session-scoped goal controller
 
-**Status:** Accepted
+**Status:** Superseded by ADR-016
 **Date:** 2026-08-16
 **Deciders:** Team
 
@@ -16,8 +16,9 @@ manage the lifecycle of the initiating OpenCode session.
 Add a goal controller keyed by OpenCode session ID. It registers `/goal` and
 `orch_goal`, persists one active goal per session, observes `session.idle`, and
 uses an ephemeral evaluator session to return `met`, `not_met`, or `impossible`.
-A `not_met` verdict submits a bounded continuation prompt to the original
-session. Goal continuation does not change that session's permission policy.
+A `not_met` verdict originally submitted a bounded continuation prompt to the
+original session. ADR-016 replaces that behavior with a dedicated worker while
+retaining this ADR's independent evaluator and bounded lifecycle.
 
 The controller enforces turn, time, token, cost, and no-progress limits. It
 ignores evaluator and workflow-step sessions and will not evaluate while tracked

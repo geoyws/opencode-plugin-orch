@@ -12,6 +12,7 @@ import {
   type GoalOptions,
 } from "./core/goal-controller.js";
 import type { ModelRef } from "./state/schemas.js";
+import { controlPlaneSnapshot } from "./core/control-plane.js";
 
 const INIT_TIMEOUT_MS = 5000;
 
@@ -115,7 +116,13 @@ async function doInit(
     options: goalOptions(options, reporter),
   });
 
+  let cleaned = false;
   const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    process.off("beforeExit", cleanup);
+    process.off("SIGINT", cleanup);
+    process.off("SIGTERM", cleanup);
     runner.destroy();
     store.destroy();
   };
@@ -154,7 +161,7 @@ async function doInit(
     },
     "command.execute.before": async (command, output) => {
       if (command.command !== "goal") return;
-      const handled = goals.handleGoalCommand(command.sessionID, command.arguments);
+      const handled = await goals.handleGoalCommand(command.sessionID, command.arguments);
       const firstText = output.parts.find((part) => part.type === "text") as
         | { type: "text"; text: string }
         | undefined;
@@ -166,6 +173,18 @@ async function doInit(
         model: message.model,
         agent: message.agent,
       });
+    },
+    "experimental.chat.system.transform": async (context, output) => {
+      const sessionID = context.sessionID;
+      if (
+        sessionID &&
+        (runner.isStepSession(sessionID) ||
+          goals.isEvaluatorSession(sessionID) ||
+          goals.isWorkerSession(sessionID))
+      ) {
+        return;
+      }
+      output.system.push(controlPlaneSnapshot(store, sessionID));
     },
     "permission.ask": createPermissionHook({
       runner,

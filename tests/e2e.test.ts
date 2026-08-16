@@ -212,12 +212,15 @@ function planCompletion(
   }
   if (
     mockScript?.goalReplies &&
-    (text.includes("Work autonomously toward this active Orch goal") ||
+    (text.includes("You are the dedicated Orch worker") ||
       text.includes("Continue working autonomously toward the active goal"))
   ) {
     const reply =
       mockScript.goalReplies[Math.min(goalReplyCounter++, mockScript.goalReplies.length - 1)];
     return { chunks: textChunks(reply), answered: "goal-worker" };
+  }
+  if (text.includes("Report that Orch accepted the goal and launched a dedicated worker")) {
+    return { chunks: textChunks("GOAL-WORKER-LAUNCHED"), answered: "goal-lead-ack" };
   }
 
   // Follow-up after a tool executed.
@@ -252,10 +255,8 @@ function planCompletion(
 }
 
 function startMockLlm() {
-  return Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(req) {
+  const handler = {
+    async fetch(req: Request) {
       const url = new URL(req.url);
       if (req.method === "POST" && url.pathname.endsWith("/chat/completions")) {
         const body = (await req.json()) as {
@@ -292,7 +293,18 @@ function startMockLlm() {
       }
       return new Response("not found", { status: 404 });
     },
-  });
+  };
+  let last: unknown;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const port = 20_000 + Math.floor(Math.random() * 30_000);
+    try {
+      return Bun.serve({ hostname: "127.0.0.1", port, ...handler });
+    } catch (err) {
+      last = err;
+      if ((err as { code?: string }).code !== "EADDRINUSE") throw err;
+    }
+  }
+  throw last instanceof Error ? last : new Error("failed to allocate mock LLM port");
 }
 
 // ── Store reading (the plugin's runs.jsonl is the source of truth) ──────
@@ -651,6 +663,47 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
   );
 
   test(
+    "t1: a new atomic build generation hot-reloads the real server plugin",
+    async () => {
+      const manifestPath = path.join(PROJECT_ROOT, "dist", ".hot", "manifest.json");
+      const before = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
+        version: string;
+        server: string;
+        tui: string;
+      };
+      const built = Bun.spawn([process.execPath, path.join(PROJECT_ROOT, "scripts", "build.ts")], {
+        cwd: PROJECT_ROOT,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const exit = await built.exited;
+      expect(exit, await new Response(built.stderr).text()).toBe(0);
+      const after = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
+        version: string;
+      };
+      expect(after.version).not.toBe(before.version);
+      expect(fs.existsSync(path.join(PROJECT_ROOT, "dist", ".hot", before.server))).toBe(true);
+      expect(fs.existsSync(path.join(PROJECT_ROOT, "dist", ".hot", before.tui))).toBe(true);
+
+      // The stable wrapper polls every 500ms and disposes this project
+      // instance. The next real API request recreates it from the new bundle.
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      const res = await client.tool.ids({ query: { directory: tier1Project() } });
+      const ids = (res.data ?? []) as string[];
+      expect(ids.filter((id) => id.startsWith("orch_")).sort()).toEqual(
+        [...ORCH_TOOL_IDS].sort()
+      );
+      const initLog = path.join(tier1Project(), ".opencode", "plugin-orch", "init.log");
+      await waitFor(
+        () => (fs.readFileSync(initLog, "utf-8").match(/ready · 9 tools/g) ?? []).length >= 2,
+        "second plugin initialization after hot reload",
+        15_000
+      );
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  test(
     "t1: SSE event endpoint is subscribable",
     async () => {
       const controller = new AbortController();
@@ -682,8 +735,10 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
       expect(goal.status).toBe("achieved");
       expect(goal.turns).toBe(2);
       expect(goal.lastVerdict).toBe("met");
+      expect(goal.workerSessionID).toBeDefined();
       expect(mockCalls.filter((call) => call.answered === "goal-worker")).toHaveLength(2);
       expect(mockCalls.filter((call) => call.answered === "goal-verdict")).toHaveLength(2);
+      expect(mockCalls.filter((call) => call.answered === "goal-lead-ack")).toHaveLength(1);
       const secondWorker = mockCalls.find((call) =>
         call.text.includes("need final evidence")
       );

@@ -394,6 +394,30 @@ describe("orch_control", () => {
     await completePrompt(e, "final retry");
     expect((await waitForRun(e, id)).status).toBe("completed");
   });
+
+  it("persists steering and delivers it to an active workflow agent", async () => {
+    const { e, tools } = await env();
+    const started = await call(tools.orch_run, {
+      workflow: "chain-draft-refine",
+      input: "x",
+      background: true,
+    });
+    const id = /Run (\S+) started/.exec(started)![1];
+    await waitFor(() => e.client.prompts.length === 1, "step session");
+    const sessionID = e.client.prompts[0].sessionID;
+    const steered = await call(tools.orch_control, {
+      action: "steer",
+      run: id,
+      message: "prioritize the failing browser path",
+    });
+    expect(steered).toContain("delivered to 1 active agent");
+    expect(e.client.prompts.at(-1)?.sessionID).toBe(sessionID);
+    expect(e.client.prompts.at(-1)?.text).toContain("failing browser path");
+    expect(await call(tools.orch_status, { run: id })).toContain(
+      "prioritize the failing browser path"
+    );
+    await e.runner.cancel(id);
+  });
 });
 
 describe("orch_goal", () => {
@@ -409,9 +433,22 @@ describe("orch_goal", () => {
       },
       context
     )) as string;
-    expect(set).toContain("Goal active: tests pass");
+    expect(set).toContain("Goal active in dedicated worker");
+    expect(set).toContain("tests pass");
     expect((await tools.orch_goal.execute({ action: "status" }, context)) as string).toContain(
       "Evaluator: deepseek/deepseek-chat"
+    );
+    expect(
+      (await tools.orch_goal.execute(
+        { action: "steer", message: "run the live test" },
+        context
+      )) as string
+    ).toContain("run the live test");
+    expect((await tools.orch_goal.execute({ action: "pause" }, context)) as string).toContain(
+      "Goal paused"
+    );
+    expect((await tools.orch_goal.execute({ action: "resume" }, context)) as string).toContain(
+      "Goal resumed"
     );
     expect((await tools.orch_goal.execute({ action: "clear" }, context)) as string).toContain(
       "Goal cleared"

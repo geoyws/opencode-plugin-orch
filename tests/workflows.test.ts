@@ -175,6 +175,7 @@ describe("v0.3 built-in workflows", () => {
     expect(def.isolation).toBe("worktree");
     expect(def.steps.map((s) => s.id)).toEqual(["planner"]);
     expect(def.aggregate).toBeDefined();
+    expect(def.steps[0].instructions).toContain("Forbid tautologies");
   });
 
   it("test-fix-loop: gate-only evaluator, gate `npm test`, maxIterations 5", () => {
