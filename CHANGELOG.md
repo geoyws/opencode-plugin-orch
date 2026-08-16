@@ -31,6 +31,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Added a separate `./tui` target with a session goal badge and read-only,
   auto-refreshing goal/workflow dashboard backed by an event-updated atomic
   read model.
+- Added a persistent prompt-side Orch activity indicator showing the active
+  goal plus running/paused workflow counts and documented the required
+  `tui.json` registration.
 - Added BRD, PRD, root epic, ADR-009 through ADR-013, and hermetic unit/server
   coverage for the new lifecycle paths.
 - Live-validated all four paid workflow scenarios with

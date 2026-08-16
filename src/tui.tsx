@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createSignal, For, onCleanup, Show } from "solid-js";
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
-import type { Snapshot, GoalState, Run } from "./state/schemas.js";
+import type { Snapshot, Run } from "./state/schemas.js";
 
 function readSnapshot(directory: string): Snapshot | undefined {
   const storeDir = path.join(directory, ".opencode", "plugin-orch");
@@ -40,16 +40,51 @@ function runTokens(run: Run): string {
   return known ? `${total}${run.config.maxTokens ? `/${run.config.maxTokens}` : ""}` : "unknown";
 }
 
-function GoalBadge(props: { directory: string; sessionID: string; color: unknown }) {
+export function activitySummary(
+  snapshot: Snapshot | undefined,
+  sessionID?: string
+): string {
+  const sections: string[] = [];
+  const goal = sessionID ? snapshot?.goals?.[sessionID] : undefined;
+  if (goal?.status === "active") {
+    sections.push(
+      `goal active ${goal.turns}/${goal.maxTurns} · ${goal.observedTokens ?? "?"}/${goal.maxTokens} tok`
+    );
+  }
+
+  const activeRuns = Object.values(snapshot?.runs ?? {}).filter(
+    (run) => run.status === "running" || run.status === "paused"
+  );
+  if (activeRuns.length > 0) {
+    const running = activeRuns.filter((run) => run.status === "running").length;
+    const paused = activeRuns.length - running;
+    const state = [
+      running > 0 ? `${running} running` : undefined,
+      paused > 0 ? `${paused} paused` : undefined,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const knownTokens = activeRuns
+      .map(runTokens)
+      .filter((tokens) => tokens !== "unknown")
+      .join("+");
+    sections.push(
+      `workflows ${state}${knownTokens ? ` · ${knownTokens} tok` : ""}`
+    );
+  }
+  return sections.join("  │  ");
+}
+
+function ActivityBadge(props: {
+  directory: string;
+  sessionID?: string;
+  color: unknown;
+}) {
   const snapshot = createSnapshot(props.directory);
-  const goal = (): GoalState | undefined => snapshot()?.goals?.[props.sessionID];
+  const summary = () => activitySummary(snapshot(), props.sessionID);
   return (
-    <Show when={goal()}>
-      {(active) => (
-        <text fg={props.color as never}>
-          goal:{active().status} {active().turns}/{active().maxTurns} · tokens {active().observedTokens ?? "?"}/{active().maxTokens}
-        </text>
-      )}
+    <Show when={summary()}>
+      {(active) => <text fg={props.color as never}>◉ orch · {active()}</text>}
     </Show>
   );
 }
@@ -127,8 +162,14 @@ const tui: TuiPlugin = async (api) => {
   ]);
   api.slots.register({
     slots: {
+      home_prompt_right: (_context, _props) => (
+        <ActivityBadge
+          directory={api.state.path.directory}
+          color={api.theme.current.accent}
+        />
+      ),
       session_prompt_right: (_context, props) => (
-        <GoalBadge
+        <ActivityBadge
           directory={api.state.path.directory}
           sessionID={props.session_id}
           color={api.theme.current.accent}

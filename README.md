@@ -41,7 +41,7 @@ Features:
 - **Event-sourced run store** — run/step state is a JSONL event log (`run_created`, `step_started`, `step_completed`, `step_failed`, `run_completed`, `run_failed`, `run_cancelled`) with a periodic atomic snapshot, persisted under `.opencode/plugin-orch/` in your project.
 - **Restart-safe resume** — interrupted runs recover as `paused`; completed steps are reused, the interrupted invocation is cancelled, and `orch_control resume` continues from the first unfinished step.
 - **Hardened init + error reporting** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `.opencode/plugin-orch/init.log`). All hooks and tools are wrapped so throws can't break opencode; every tool returns `Error: <msg>` strings on failure. On startup you see `[orch] ready · 9 tools` as a success toast.
-- **Separate TUI target** — `opencode-plugin-orch/tui` adds a live session goal badge and a read-only workflow/goal dashboard without coupling the server engine to OpenTUI.
+- **Separate TUI target** — `opencode-plugin-orch/tui` adds a persistent prompt-side activity badge for the active goal and running/paused workflows, plus a read-only workflow/goal dashboard, without coupling the server engine to OpenTUI.
 - **Worktree isolation** — parallel/orchestrator fan-out steps can run in per-step git worktrees (sibling dir `.orch-worktrees/`) with copy-back on success, so concurrent writers don't stomp on each other. See [Worktree isolation](#worktree-isolation).
 - **Shell steps and gates** — steps can be plain shell commands, and evaluator loops can gate on a real command (e.g. `npm test`) instead of only a critic model. See [Shell steps and gates](#shell-steps-and-gates).
 - **Per-step models and output caps** — `stepModels` pins any step to its own model; `maxStepOutputChars` caps how much step output feeds later prompts. See [choosing models](#choosing-models) and [run configuration](#run-configuration).
@@ -72,6 +72,17 @@ Then register the plugin in your opencode config at `~/.config/opencode/opencode
 
 ```json
 {
+  "plugin": ["../../work/src/opencode-plugin-orch"]
+}
+```
+
+OpenCode loads visual plugins from a separate `~/.config/opencode/tui.json`.
+Register the same package there to enable the persistent goal/workflow badge
+and `/orch-dashboard`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
   "plugin": ["../../work/src/opencode-plugin-orch"]
 }
 ```
@@ -168,6 +179,7 @@ For a full walkthrough of the built-in workflows, see [`examples/workflow-demo.m
 - **No `orch_*` tools visible**: `dist/index.js` wasn't built. Run `pnpm install && pnpm run build` again. The `prepare` script in `package.json` should handle this automatically on install, but a stale checkout can miss it.
 - **`plugin has no server entrypoint` warning in logs**: your `package.json` might be missing the `./server` exports subpath. See [ADR-003](docs/adr/ADR-003-plugin-entrypoint-discovery.md) for the root cause; pulling the latest master fixes it.
 - **Plugin never loads**: check `orch_log action=tail` (once the plugin is minimally loaded) or grep the newest file in your opencode log dir for `service=plugin path=file://` to see which plugin path opencode tried to resolve. Make sure `dist/index.js` exists at that path.
+- **Goal/workflow tools load but no activity badge appears**: server plugins and visual plugins use different config files. Add the package to `~/.config/opencode/tui.json`, restart the TUI, and check the TUI plugin manager for `opencode-plugin-orch`. The badge is intentionally hidden when there is no active goal and no running/paused workflow.
 - **`ConnectionRefused http://localhost:11434`** spam in logs: your opencode config has a `small_model` pointing at a non-running ollama. Change it to your primary model or remove the `small_model` line entirely.
 
 ## Installation
@@ -191,6 +203,17 @@ Then add to `~/.config/opencode/opencode.json`:
   "plugin": ["../../work/src/opencode-plugin-orch"]
 }
 ```
+
+Add the visual entrypoint separately in `~/.config/opencode/tui.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["../../work/src/opencode-plugin-orch"]
+}
+```
+
+Restart OpenCode after changing `tui.json`; TUI plugins are loaded at startup.
 
 **Important**: the path is relative, not absolute. Opencode resolves it against the config file's own dirname (`~/.config/opencode/`), which gives `$HOME/work/src/opencode-plugin-orch` on both macOS and Linux. An absolute path would only work on one machine.
 

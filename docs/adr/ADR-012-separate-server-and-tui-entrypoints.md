@@ -19,6 +19,12 @@ read model and invokes server-supported operations; it never edits event logs or
 snapshots directly. Tools and slash commands provide full fallback operation
 without the TUI target.
 
+OpenCode does not auto-discover TUI entrypoints from `opencode.json`. Install
+the same package spec separately in `tui.json`; its loader resolves the
+package's `./tui` export. The prompt slot shows a persistent active-goal and
+workflow-execution summary, while `/orch-dashboard` provides the detailed
+read-only view.
+
 ## Consequences
 
 - OpenCode can show native goal and workflow UI without forking its TUI.

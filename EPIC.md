@@ -81,6 +81,7 @@ and exposes durable progress and controls after the initiating turn ends.
 
 - [x] Ship separate server and TUI plugin entrypoints.
 - [x] Show a session goal indicator with turns and token budget.
+- [x] Show running and paused workflow activity beside the home/session prompt.
 - [x] Provide a workflow route with run/node state and token drill-down.
 - [x] Refresh the TUI from an event-updated `view.json` read model while
       retaining `snapshot.json` as the compacted recovery fast path.
