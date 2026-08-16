@@ -41,6 +41,8 @@ and exposes durable progress and controls after the initiating turn ends.
 - [x] Stop or pause safely on turn, elapsed-time, token, cost, or no-progress
       limits.
 - [x] Restore active goals when the same OpenCode session is resumed.
+- [x] Persist evaluator continuation before compaction, release it exactly once
+      on the post-compaction idle event, and recover it after plugin reload.
 
 ### Dynamic workflow authoring and execution
 
@@ -72,6 +74,8 @@ and exposes durable progress and controls after the initiating turn ends.
 - [x] Generate deterministic checkpoint summaries before configurable context pressure.
 - [x] Reuse checkpoint summaries after restart/resume instead of replaying the
       transcript.
+- [x] Keep compaction asynchronous from the idle hook and surface a truthful
+      `compacting` worker state while continuation is pending.
 - [x] Prefer a configured cheap evaluator/summarizer model.
 - [x] Surface budget, compaction, truncation, and cache behavior in status.
 - [ ] Add provider-side per-invocation token ceilings when OpenCode exposes a
@@ -99,11 +103,13 @@ and exposes durable progress and controls after the initiating turn ends.
 - [x] Exercise a real OpenCode server against the hermetic mock provider,
       including the `/goal` continuation lifecycle.
 - [x] Capture opt-in live DeepSeek receipts; never run them in ordinary CI.
+- [x] Paid-live test DeepSeek as goal worker, evaluator, and summarizer across
+      an automatic compaction followed by successful continuation.
 
 ## Acceptance criteria
 
 - `/goal` starts, reports, clears, independently evaluates, and automatically
-  continues a session in a real OpenCode server test.
+  continues a session across forced compaction in a real OpenCode server test.
 - A DeepSeek model reference can be selected for goal evaluation and every
   workflow node without special casing.
 - A dynamic workflow can be authored from validated JSON, executed, paused,
@@ -179,6 +185,8 @@ and exposes durable progress and controls after the initiating turn ends.
 - [x] Publish atomic bundled generations and reload server/TUI lifecycles.
 - [x] Prove the installed server, TUI statusline, reload, steering, recovery,
       and paid/live provider paths end to end.
+- [x] Fence the compaction deadlock and reload race with unit and real-server
+      E2E coverage, and record the event-ordering contract in ADR-018.
 - [x] Rebuild local installations, commit, and push the verified release.
 
 Future native work is not part of this epic. It requires production-like

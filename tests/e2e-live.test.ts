@@ -7,7 +7,8 @@
 // Manual pre-release runs only, mirroring ADR-001's live-testing practice:
 //     pnpm run test:e2e:live        (= ORCH_LIVE=1 bun test tests/e2e-live.test.ts)
 //
-// Four scenarios, each with an OBJECTIVE assertion (store / git / exit codes)
+// Five scenarios. The first four have an OBJECTIVE assertion (store / git /
+// exit codes)
 // AND a JUDGE verdict (an LLM grades output quality against a rubric; the
 // judge's rationale is printed and embedded in the failure message):
 //
@@ -18,6 +19,8 @@
 //      goes green; tests untouched; fix is genuine (judged on the diff)
 //   4. author-tests        — real repo, worktree-isolated workers; generated
 //      tests exist and pass; coverage is meaningful (judged)
+//   5. goal compaction     — real provider worker/evaluator/summarizer; forces
+//      automatic compaction and proves the persisted continuation runs
 //
 // The judge is itself an LLM and can be wrong — rubrics are written to be
 // explicit and demanding. If a verdict fails on a genuinely good artifact,
@@ -31,8 +34,10 @@ import * as os from "node:os";
 import {
   DIST_EXISTS,
   bootLiveServer,
+  liveModel,
   runLeadPrompt,
   judge,
+  waitFor,
   waitForRunCreated,
   waitForTerminalRun,
   type Verdict,
@@ -97,6 +102,34 @@ function writeFile(project: string, rel: string, content: string): void {
 function expectVerdict(verdict: Verdict): void {
   console.log(`\n[judge] ${verdict.pass ? "PASS" : "FAIL"}\n${verdict.raw}\n`);
   expect(verdict.pass, verdict.rationale).toBe(true);
+}
+
+type GoalView = {
+  sessionID: string;
+  status: string;
+  turns: number;
+  workerSessionID?: string;
+  workerStatus?: string;
+  observedTokens?: number;
+  lastCompactedTokens?: number;
+  pendingContinuation?: string;
+  lastVerdict?: string;
+  lastReason?: string;
+};
+
+function readGoal(project: string, sessionID: string): GoalView | undefined {
+  const fp = path.join(project, ".opencode", "plugin-orch", "view.json");
+  if (!fs.existsSync(fp)) return undefined;
+  try {
+    const view = JSON.parse(fs.readFileSync(fp, "utf-8")) as {
+      goals?: Record<string, GoalView>;
+    };
+    return view.goals?.[sessionID];
+  } catch {
+    // view.json is atomically replaced, but tolerate a concurrent filesystem
+    // observer and let waitFor retry.
+    return undefined;
+  }
 }
 
 // ── Planted-bug fixtures ────────────────────────────────────────────────
@@ -197,7 +230,14 @@ describe.skipIf(SKIP)("e2e live: LLM-as-judge (ORCH_LIVE=1, costs real tokens)",
 
   beforeAll(async () => {
     const probe = makeProject("probe");
-    const booted = await bootLiveServer(probe, BOOT_TIMEOUT_MS);
+    const model = liveModel();
+    const booted = await bootLiveServer(probe, BOOT_TIMEOUT_MS, {
+      goalSoftTokens: 1,
+      goalMaxTokens: 250_000,
+      ...(model
+        ? { goalEvaluatorModel: model, goalSummarizerModel: model }
+        : {}),
+    });
     client = booted.client;
     server = booted.server;
   }, BOOT_TIMEOUT_MS + 60_000);
@@ -487,5 +527,67 @@ describe.skipIf(SKIP)("e2e live: LLM-as-judge (ORCH_LIVE=1, costs real tokens)",
       expectVerdict(verdict);
     },
     12 * 60_000
+  );
+
+  test(
+    "live 5: goal continues after automatic compaction",
+    async () => {
+      const project = makeProject("goal-compaction");
+      const model = liveModel();
+      const condition =
+        "Follow this two-turn evidence protocol exactly. On the first goal-worker " +
+        "turn, output PHASE_ONE_RECORDED and explicitly say PHASE_TWO_PENDING; do " +
+        "not output ORCH_LIVE_GOAL_DONE. The goal is not met at that point. Only " +
+        "after the independent evaluator asks you to continue, output " +
+        "ORCH_LIVE_GOAL_DONE and state that phase one preceded phase two. The goal " +
+        "is met only when that later completion marker is present.";
+
+      const goalArgs = {
+        action: "set",
+        condition,
+        maxTurns: 5,
+        maxTokens: 250_000,
+        softTokens: 1,
+        noProgressLimit: 3,
+        ...(model
+          ? {
+              evaluatorProvider: model.providerID,
+              evaluatorModel: model.modelID,
+            }
+          : {}),
+      };
+      const sessionID = await runLeadPrompt(
+        client,
+        project,
+        "Call the orch_goal tool exactly once with these exact JSON arguments: " +
+          JSON.stringify(goalArgs) +
+          ". After the tool returns, report only that the dedicated goal worker " +
+          "was launched, then stop. Do not perform the goal work in this lead session."
+      );
+
+      await waitFor(
+        () => {
+          const goal = readGoal(project, sessionID);
+          return goal?.status === "achieved" ||
+            ["impossible", "paused", "budget_exhausted"].includes(goal?.status ?? "");
+        },
+        "live goal to settle after automatic compaction",
+        8 * 60_000
+      );
+
+      const goal = readGoal(project, sessionID)!;
+      console.log(
+        `\n[goal-compaction] status=${goal.status} turns=${goal.turns} ` +
+          `tokens=${goal.observedTokens ?? "unknown"} ` +
+          `compactedAt=${goal.lastCompactedTokens ?? "none"}\n`
+      );
+      expect(goal.status, goal.lastReason ?? "goal did not achieve").toBe("achieved");
+      expect(goal.turns).toBeGreaterThanOrEqual(2);
+      expect(goal.lastVerdict).toBe("met");
+      expect(goal.lastCompactedTokens).toBeGreaterThan(0);
+      expect(goal.pendingContinuation).toBeUndefined();
+      expect(goal.workerSessionID).toBeDefined();
+    },
+    10 * 60_000
   );
 });

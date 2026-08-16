@@ -176,13 +176,17 @@ export const GoalState = z.object({
   workerAgent: z.string().optional(),
   workerSessionID: z.string().optional(),
   workerStatus: z
-    .enum(["starting", "running", "evaluating", "idle", "stopped"])
+    .enum(["starting", "running", "evaluating", "compacting", "idle", "stopped"])
     .optional(),
   steering: z.array(SteeringNote).default([]),
   lastVerdict: z.enum(["met", "not_met", "impossible"]).optional(),
   lastReason: z.string().optional(),
   checkpoint: z.string().optional(),
   lastCompactedTokens: z.number().int().nonnegative().optional(),
+  // A not_met continuation is persisted before explicit OpenCode compaction.
+  // The next worker idle event delivers it after compaction has settled.
+  pendingContinuation: z.string().optional(),
+  pendingCompactionTokens: z.number().int().nonnegative().optional(),
   // Provider message IDs already included in observedTokens/observedCost.
   // This keeps accounting monotonic when session summarization removes old
   // messages from the visible transcript.

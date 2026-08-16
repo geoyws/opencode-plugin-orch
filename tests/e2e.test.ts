@@ -246,6 +246,12 @@ function planCompletion(
 
   // Otherwise this is the lead's first request.
   if (mockScript) {
+    if (!mockScript.leadTool) {
+      return {
+        chunks: textChunks("## Goal\nPreserve the active goal and continue with fresh evidence."),
+        answered: "goal-compaction",
+      };
+    }
     return {
       chunks: toolCallChunks(mockScript.leadTool.name, mockScript.leadTool.args),
       answered: mockScript.leadTool.name,
@@ -598,7 +604,11 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
       timeout: 60_000,
       config: {
         autoupdate: false,
-        plugin: [PLUGIN_PATH],
+        plugin: [[PLUGIN_PATH, {
+          goalSoftTokens: 1,
+          goalMaxTokens: 1_000,
+          goalSummarizerModel: MOCK_MODEL,
+        }]],
         model: `${MOCK_PROVIDER}/${MOCK_MODEL_ID}`,
         provider: {
           [MOCK_PROVIDER]: {
@@ -737,6 +747,7 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
       expect(goal.lastVerdict).toBe("met");
       expect(goal.workerSessionID).toBeDefined();
       expect(mockCalls.filter((call) => call.answered === "goal-worker")).toHaveLength(2);
+      expect(mockCalls.filter((call) => call.answered === "goal-compaction")).toHaveLength(1);
       expect(mockCalls.filter((call) => call.answered === "goal-verdict")).toHaveLength(2);
       expect(mockCalls.filter((call) => call.answered === "goal-lead-ack")).toHaveLength(1);
       const secondWorker = mockCalls.find((call) =>

@@ -25,6 +25,12 @@ export interface GoalClient {
     ids(opts: { query?: { directory?: string } }): Promise<{ data?: string[] }>;
   };
   session: {
+    status?(
+      opts?: { query?: { directory?: string } }
+    ): Promise<{
+      data?: Record<string, { type: "idle" | "retry" | "busy" }>;
+      error?: unknown;
+    }>;
     create(opts: {
       body: { title: string };
       query?: { directory?: string };
@@ -89,6 +95,12 @@ export interface GoalSetOptions {
   noProgressLimit?: number;
   maxCost?: number;
 }
+
+type CompactionRequest = {
+  sessionID: string;
+  workerSessionID: string;
+  model: ModelRef;
+};
 
 const Verdict = z.object({
   verdict: z.enum(["met", "not_met", "impossible"]),
@@ -311,10 +323,13 @@ export class GoalController {
   async resume(sessionID: string): Promise<GoalState> {
     const goal = this.requireControllableGoal(sessionID);
     if (goal.status !== "paused") throw new Error(`goal is ${goal.status}, not paused`);
+    const continuation = goal.pendingContinuation;
     const resumed: GoalState = {
       ...goal,
       status: "active",
       workerStatus: goal.workerSessionID ? "running" : "starting",
+      pendingContinuation: undefined,
+      pendingCompactionTokens: undefined,
       updatedAt: Date.now(),
       completedAt: undefined,
       lastReason: "resumed by user",
@@ -323,7 +338,8 @@ export class GoalController {
     if (!resumed.workerSessionID) return this.launchWorker(resumed);
     await this.promptWorker(
       resumed,
-      `Resume autonomous work toward the goal. Apply all durable steering and surface fresh evidence.\n\nGoal: ${resumed.condition}`
+      continuation ??
+        `Resume autonomous work toward the goal. Apply all durable steering and surface fresh evidence.\n\nGoal: ${resumed.condition}`
     );
     return this.deps.store.getGoal(sessionID) ?? resumed;
   }
@@ -333,10 +349,14 @@ export class GoalController {
     const text = message.trim();
     if (!text) throw new Error("steering message must not be empty");
     if (text.length > 4000) throw new Error("steering message exceeds 4000 characters");
+    const canDeliver =
+      goal.status === "active" &&
+      goal.workerSessionID !== undefined &&
+      goal.workerStatus !== "compacting";
     const note = {
       text,
       createdAt: Date.now(),
-      deliveredTo: goal.status === "active" && goal.workerSessionID ? [goal.workerSessionID] : [],
+      deliveredTo: canDeliver ? [goal.workerSessionID!] : [],
     };
     const steered: GoalState = {
       ...goal,
@@ -344,7 +364,7 @@ export class GoalController {
       updatedAt: Date.now(),
     };
     this.deps.store.updateGoal(steered);
-    if (goal.status === "active" && goal.workerSessionID) {
+    if (canDeliver && goal.workerSessionID) {
       try {
         await this.promptWorker(
           steered,
@@ -445,15 +465,63 @@ export class GoalController {
     );
   }
 
+  async recover(): Promise<void> {
+    const pending = this.deps.store
+      .listGoals()
+      .filter(
+        (goal) =>
+          goal.status === "active" &&
+          goal.workerStatus === "compacting" &&
+          goal.workerSessionID !== undefined &&
+          goal.pendingContinuation !== undefined
+      );
+    if (pending.length === 0) return;
+    if (!this.deps.client.session.status) {
+      this.deps.reporter.warn(
+        "[orch]",
+        `cannot recover ${pending.length} compacting goal(s): session status API unavailable`
+      );
+      return;
+    }
+
+    try {
+      const result = await this.deps.client.session.status({
+        query: { directory: this.deps.directory },
+      });
+      if (result.error !== undefined) {
+        throw new Error(String(result.error));
+      }
+      const statuses = result.data ?? {};
+      for (const goal of pending) {
+        const status = statuses[goal.workerSessionID!];
+        // OpenCode only retains non-idle sessions in /session/status. An
+        // absent entry therefore means the compaction turn already settled.
+        if (status === undefined || status.type === "idle") {
+          await this.continueAfterCompaction(goal.sessionID);
+        }
+      }
+    } catch (err) {
+      this.deps.reporter.warn(
+        "[orch]",
+        `goal recovery deferred: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   async onSessionIdle(sessionID: string): Promise<void> {
     const goal = this.deps.store
       .listGoals()
       .find((candidate) => candidate.workerSessionID === sessionID);
     if (!goal || goal.status !== "active") return;
+    if (goal.workerStatus === "compacting" && goal.pendingContinuation) {
+      await this.continueAfterCompaction(goal.sessionID);
+      return;
+    }
     if (this.evaluating.has(goal.sessionID) || this.evaluatorSessions.has(sessionID)) return;
     this.evaluating.add(goal.sessionID);
+    let compaction: CompactionRequest | undefined;
     try {
-      await this.evaluate(goal);
+      compaction = await this.evaluate(goal);
     } catch (err) {
       const latest = this.deps.store.getGoal(goal.sessionID);
       if (latest?.status === "active") {
@@ -476,6 +544,7 @@ export class GoalController {
     } finally {
       this.evaluating.delete(goal.sessionID);
     }
+    if (compaction) this.requestCompaction(compaction);
   }
 
   async onSessionError(sessionID: string, message: string): Promise<void> {
@@ -578,7 +647,7 @@ export class GoalController {
     ).catch(() => {});
   }
 
-  private async evaluate(original: GoalState): Promise<void> {
+  private async evaluate(original: GoalState): Promise<CompactionRequest | undefined> {
     if (!original.workerSessionID) throw new Error("goal has no worker session");
     const workerSessionID = original.workerSessionID;
     this.deps.store.updateGoal({
@@ -623,28 +692,19 @@ export class GoalController {
         lastReason: limitReason,
       };
       this.deps.store.resolveGoal(goal);
-      return;
+      return undefined;
     }
 
-    if (
+    const compactionModel =
+      this.deps.options.summarizerModel ??
+      goal.evaluatorModel ??
+      goal.workerModel;
+    const shouldCompact =
       observedTokens !== undefined &&
       observedTokens >= goal.softTokens &&
-      (goal.lastCompactedTokens === undefined || observedTokens > goal.lastCompactedTokens)
-    ) {
-      const model =
-        this.deps.options.summarizerModel ??
-        goal.evaluatorModel ??
-        goal.workerModel;
-      if (model && this.deps.client.session.summarize) {
-        await this.deps.client.session.summarize({
-          path: { id: workerSessionID },
-          body: model,
-          query: { directory: this.deps.directory },
-        });
-        goal = { ...goal, lastCompactedTokens: observedTokens, updatedAt: Date.now() };
-        this.deps.store.updateGoal(goal);
-      }
-    }
+      (goal.lastCompactedTokens === undefined || observedTokens > goal.lastCompactedTokens) &&
+      compactionModel !== undefined &&
+      this.deps.client.session.summarize !== undefined;
 
     const evidence = boundedEvidence(messages, this.deps.options.evidenceChars);
     const evaluator = await this.deps.client.session.create({
@@ -706,7 +766,7 @@ export class GoalController {
         workerStatus: "stopped",
         completedAt: Date.now(),
       });
-      return;
+      return undefined;
     }
     if (goal.noProgressTurns >= goal.noProgressLimit) {
       this.deps.store.resolveGoal({
@@ -715,16 +775,97 @@ export class GoalController {
         workerStatus: "idle",
         lastReason: `paused after ${goal.noProgressTurns} turns without tool activity: ${verdict.reason}`,
       });
-      return;
+      return undefined;
+    }
+
+    const continuation =
+      `Continue working autonomously toward the active goal. The independent ` +
+      `evaluator said it is not yet met: ${verdict.reason}\n\n` +
+      `Goal: ${goal.condition}\n\nUse tools and surface fresh concrete evidence.`;
+    if (shouldCompact && compactionModel && observedTokens !== undefined) {
+      this.deps.store.updateGoal({
+        ...goal,
+        workerStatus: "compacting",
+        pendingContinuation: continuation,
+        pendingCompactionTokens: observedTokens,
+        updatedAt: Date.now(),
+      });
+      return {
+        sessionID: goal.sessionID,
+        workerSessionID,
+        model: compactionModel,
+      };
     }
 
     this.deps.store.updateGoal(goal);
-    await this.promptWorker(
-      goal,
-      `Continue working autonomously toward the active goal. The independent ` +
-        `evaluator said it is not yet met: ${verdict.reason}\n\n` +
-        `Goal: ${goal.condition}\n\nUse tools and surface fresh concrete evidence.`
-    );
+    await this.promptWorker(goal, continuation);
+    return undefined;
+  }
+
+  private requestCompaction(request: CompactionRequest): void {
+    // OpenCode's summarize endpoint owns a model turn and may keep the HTTP
+    // request open until that turn settles. Never await it inside the idle hook:
+    // doing so prevents the compaction idle event that releases continuation.
+    void Promise.resolve().then(() =>
+      this.deps.client.session.summarize!({
+        path: { id: request.workerSessionID },
+        body: request.model,
+        query: { directory: this.deps.directory },
+      })
+    ).catch((err) => {
+      const current = this.deps.store.getGoal(request.sessionID);
+      if (current?.status !== "active" || current.workerStatus !== "compacting") return;
+      this.deps.store.updateGoal({
+        ...current,
+        status: "paused",
+        workerStatus: "idle",
+        updatedAt: Date.now(),
+        lastReason: `compaction failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    });
+  }
+
+  private async continueAfterCompaction(sessionID: string): Promise<void> {
+    if (this.evaluating.has(sessionID)) return;
+    this.evaluating.add(sessionID);
+    try {
+      const goal = this.deps.store.getGoal(sessionID);
+      if (
+        !goal ||
+        goal.status !== "active" ||
+        goal.workerStatus !== "compacting" ||
+        !goal.pendingContinuation
+      ) {
+        return;
+      }
+      const continuation = goal.pendingContinuation;
+      const resumed: GoalState = {
+        ...goal,
+        workerStatus: "idle",
+        lastCompactedTokens:
+          goal.pendingCompactionTokens ?? goal.lastCompactedTokens,
+        pendingContinuation: undefined,
+        pendingCompactionTokens: undefined,
+        updatedAt: Date.now(),
+      };
+      this.deps.store.updateGoal(resumed);
+      await this.promptWorker(resumed, continuation);
+    } catch (err) {
+      const current = this.deps.store.getGoal(sessionID);
+      if (current?.status === "active") {
+        this.deps.store.updateGoal({
+          ...current,
+          status: "paused",
+          workerStatus: "idle",
+          updatedAt: Date.now(),
+          lastReason: `post-compaction continuation failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        });
+      }
+    } finally {
+      this.evaluating.delete(sessionID);
+    }
   }
 
   private async disabledTools(): Promise<Record<string, boolean>> {

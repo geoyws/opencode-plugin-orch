@@ -42,6 +42,12 @@ observable through tools, slash commands, and an optional TUI.
   `{ "verdict": "met|not_met|impossible", "reason": "..." }`.
 - On `not_met`, append the evaluator reason and condition to a new prompt in
   the dedicated worker session.
+- When a soft-token compaction is required, persist that continuation before
+  requesting compaction, release the evaluator's idle hook, and deliver it
+  exactly once only after the worker becomes idle again.
+- Recover a persisted post-compaction continuation after plugin reload or
+  restart. Query OpenCode session status first; never prompt a busy or retrying
+  worker concurrently, and retain the continuation when status is unavailable.
 - On `met` or `impossible`, resolve the goal and do not continue.
 - After repeated turns without tool activity, pause with the goal still active.
 - Inject a fresh bounded system snapshot into each lead turn with active goals,
@@ -56,6 +62,8 @@ observable through tools, slash commands, and an optional TUI.
 - Every default is configurable through plugin options and per-goal tool input.
 - A hard limit stops automatic continuation before the next turn.
 - A soft limit triggers a compact checkpoint and warning.
+- Goal compaction has a visible `compacting` worker state and cannot block the
+  session event callback that drives continuation.
 - Unknown provider usage is reported as unknown, never zero.
 
 ### Dynamic workflow definition
@@ -155,14 +163,16 @@ observable through tools, slash commands, and an optional TUI.
 ## Quality requirements
 
 - Unit coverage for every state transition and budget boundary.
-- Hermetic real-server coverage for command registration, evaluator continuation,
-  dynamic run controls, recovery, and token accounting.
+- Hermetic real-server coverage for command registration, evaluator
+  continuation across forced compaction, dynamic run controls, recovery, and
+  token accounting.
 - Opt-in `ORCH_LIVE=1 ORCH_LIVE_MODEL=<provider>/<model>` scenarios for
   DeepSeek and other real models.
 - Typecheck and build must pass with strict TypeScript.
 - A TUI load smoke test must verify the separate target entrypoint.
 - E2E must prove lead/worker isolation, dynamic control snapshots, steering,
-  cancellation, restart recovery, and the installed statusline token display.
+  cancellation, post-compaction continuation/restart recovery, and the
+  installed statusline token display.
 
 ## Local development and hot reload
 

@@ -36,7 +36,7 @@ Features:
 - **CLI-safe event-driven runs** — the `event` hook drives each run forward on `session.idle` (collect the step output, start the next step) and fails the run on `session.error`. `orch_run` stays attached by default because a one-shot `opencode run` process would otherwise dispose active child sessions; persistent interactive sessions can opt into `background: true`. Steps also have a 10-minute timeout.
 - **Lead/control-plane goal mode** — `/goal <condition>` launches a dedicated worker, independently evaluates that worker's bounded evidence, and continues the worker on `not_met`. The initiating conversation stays clear for `/goal`, `/goal steer ...`, `/goal pause`, `/goal resume`, and `/goal clear`.
 - **Live delegated-work awareness** — every lead turn receives a compact system snapshot of active goals/workflows, elapsed time, worker state, active agents, tokens, steps, last verdict, and latest steering. Worker/evaluator/step sessions do not receive the lead instruction.
-- **Automatic token economy** — provider-reported input, output, reasoning, cache-read, cache-write, and cost are persisted. Soft thresholds switch later prompts to compact checkpoints; hard token/cost limits stop before another step or turn. Unknown usage remains explicitly unknown.
+- **Automatic token economy** — provider-reported input, output, reasoning, cache-read, cache-write, and cost are persisted. Soft thresholds compact goal workers asynchronously, show a `compacting` state, and release the durable evaluator continuation exactly once after OpenCode returns idle; reload recovery resumes an already-settled compaction. Hard token/cost limits stop before another step or turn. Unknown usage remains explicitly unknown.
 - **Ephemeral step sessions** — every step invocation is one throwaway opencode session titled `orch/<run-id>/<step-id>`. No persistent members, no shared state between steps except what the runner passes via prompt templates.
 - **Session teardown** — step sessions are deleted when their step settles (success, failure, cancel, timeout), and orphaned sessions from runs interrupted by a restart are aborted and deleted on plugin init. Set `keepSessions: true` in the run config to keep them for debugging.
 - **Event-sourced run store** — run/step state is a JSONL event log (`run_created`, `step_started`, `step_completed`, `step_failed`, `run_completed`, `run_failed`, `run_cancelled`) with a periodic atomic snapshot, persisted under `.opencode/plugin-orch/` in your project.
@@ -246,7 +246,7 @@ There is no platform-specific code path — the resolved absolute path just happ
 
 ## Using it
 
-Use `/goal all tests pass and the built artifact loads` to launch a dedicated autonomous worker. `/goal` reports its worker, turns, elapsed time, observed usage, evaluator, and last verdict. `/goal steer run the browser test`, `/goal pause`, `/goal resume`, and `/goal clear` control it without moving implementation traces into the lead conversation. The worker inherits the lead's selected model and agent when OpenCode reports them.
+Use `/goal all tests pass and the built artifact loads` to launch a dedicated autonomous worker. `/goal` reports its worker, turns, elapsed time, observed usage, evaluator, compaction state, and last verdict. `/goal steer run the browser test`, `/goal pause`, `/goal resume`, and `/goal clear` control it without moving implementation traces into the lead conversation. The worker inherits the lead's selected model and agent when OpenCode reports them. A continuation pending behind compaction is durable across hot reload and is sent only after the worker is idle.
 
 Orch is deliberately not a DeepSeek Harness integration. It accepts any
 provider/model reference already exposed by OpenCode; a separate plugin owns
@@ -453,16 +453,17 @@ The test suite is at `tests/`, driven by `bun test` with a fake opencode client 
 - `worktree.test.ts` — porcelain parsing, the add/copy-back/remove lifecycle against real git repos in temp dirs, and worktree-isolated runs (poll fallback, conflicts, `isolationFallback`)
 - `permissions.test.ts` — the git-mutation matcher (mutating denied, read-only allowed) and the `permission.ask` hook policy (step sessions auto-allowed, non-step sessions untouched, `ORCH_STEP_PERMISSIONS=ask` escape hatch)
 - `goal.test.ts` — dedicated worker isolation, independent verdicts, steering,
-  automatic worker continuation, compaction, monotonic usage, and budgets
+  automatic worker continuation, non-blocking compaction, reload recovery,
+  monotonic usage, and budgets
 - `control-plane.test.ts` — bounded live lead snapshots and control guidance
 - `usage.test.ts` — complete category accounting, including cache reads/writes
 - `tools.test.ts` — all 9 tools with the same fake-client harness
 - `plugin.test.ts` — init wires hooks/commands, returns 9 tools, init failure returns `{}` without throwing
 - `tui.test.ts` — separate target load smoke test
 
-`tests/e2e.test.ts` runs against a **real in-process opencode server** (spawned via `createOpencode()`, plugin injected through config — no fake client). It has two tiers: **tier 1** boots the server and verifies plugin load (tool registration, init log, SSE endpoint); **tier 2** drives full workflow runs through the real stack against a mock LLM — a tiny in-process OpenAI-compatible chat-completions server scripted to make the lead session call `orch_run`/`orch_cancel` and to answer step prompts — asserting on the plugin's own store (`runs.jsonl`) and the mock's request log. Both tiers are hermetic (redirected `HOME`, seeded opencode caches, dead external proxy; requires the `opencode` binary on PATH and a built `dist/`) and run as part of plain `bun test`; `pnpm run test:e2e` runs just this file.
+`tests/e2e.test.ts` runs against a **real in-process opencode server** (spawned via `createOpencode()`, plugin injected through config — no fake client). It has two tiers: **tier 1** boots the server and verifies plugin load (tool registration, init log, SSE endpoint); **tier 2** drives full workflow and `/goal` runs through the real stack against a mock LLM — a tiny in-process OpenAI-compatible chat-completions server scripted to make the lead session call Orch tools and to answer delegated prompts — asserting on the plugin's own store (`runs.jsonl`) and the mock's request log. The goal scenario forces the soft-token boundary, exercises OpenCode's actual compaction endpoint, and proves one post-compaction continuation. Both tiers are hermetic (redirected `HOME`, seeded opencode caches, dead external proxy; requires the `opencode` binary on PATH and a built `dist/`) and run as part of plain `bun test`; `pnpm run test:e2e` runs just this file.
 
-`tests/e2e-live.test.ts` is the **live tier** (`pnpm run test:e2e:live`, i.e. `ORCH_LIVE=1` — costs real tokens, manual pre-release runs only): four real workflow runs against the configured default model (override with `ORCH_LIVE_MODEL=providerID/modelID`), each with an objective assertion (store state, `git diff`, gate exit codes) AND an **LLM-as-judge** verdict on output quality — a judge session grades the artifact against a demanding rubric and replies `VERDICT: PASS|FAIL` with a rationale. Scenarios: chain-draft-refine tagline quality, adversarial-review finding a planted off-by-one, test-fix-loop fixing a planted bug without touching the tests (gate `npm test`), and author-tests writing meaningful passing tests for a small repo.
+`tests/e2e-live.test.ts` is the **live tier** (`pnpm run test:e2e:live`, i.e. `ORCH_LIVE=1` — costs real tokens, manual pre-release runs only). Four real workflow runs use the configured model (override with `ORCH_LIVE_MODEL=providerID/modelID`), objective assertions (store state, `git diff`, gate exit codes), and an **LLM-as-judge** verdict on output quality: chain-draft-refine tagline quality, adversarial-review finding a planted off-by-one, test-fix-loop fixing a planted bug without touching the tests (gate `npm test`), and author-tests writing meaningful passing tests. A fifth live scenario runs the provider as goal worker, evaluator, and summarizer, forces the automatic soft-token compaction boundary, and asserts that the durable continuation reaches a later `met` verdict.
 
 ## Architecture
 
@@ -530,6 +531,7 @@ See [`docs/adr/`](docs/adr/) for architecture decision records:
 - [ADR-015](docs/adr/ADR-015-typescript-first-runtime-with-profile-guided-native-optimization.md) — TypeScript-first runtime with profile-guided native optimization
 - [ADR-016](docs/adr/ADR-016-lead-control-plane-and-dedicated-goal-workers.md) — Lead control plane and dedicated goal workers (supersedes ADR-009 continuation)
 - [ADR-017](docs/adr/ADR-017-atomic-generation-hot-reload.md) — Atomic generation hot reload for server and TUI
+- [ADR-018](docs/adr/ADR-018-event-bound-goal-continuation-after-compaction.md) — Event-bound goal continuation after compaction
 
 ## License
 

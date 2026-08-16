@@ -40,13 +40,16 @@ export interface LiveServer {
 
 export async function bootLiveServer(
   probeDir: string,
-  timeoutMs = 180_000
+  timeoutMs = 180_000,
+  pluginOptions?: Record<string, unknown>
 ): Promise<LiveServer> {
   const result = await createOpencode({
     hostname: "127.0.0.1",
     port: 0,
     timeout: 60_000,
-    config: { plugin: [PLUGIN_PATH] } as never,
+    config: {
+      plugin: pluginOptions ? [[PLUGIN_PATH, pluginOptions]] : [PLUGIN_PATH],
+    } as never,
   });
   // Wait until the server actually answers — createOpencode resolves on the
   // listening line, but provider/plugin init happens on first requests.
@@ -76,7 +79,7 @@ export async function runLeadPrompt(
   client: OpencodeClient,
   project: string,
   text: string
-): Promise<void> {
+): Promise<string> {
   const sess = await client.session.create({
     query: { directory: project },
     body: { title: "e2e-live-lead" },
@@ -91,6 +94,7 @@ export async function runLeadPrompt(
       ...(model ? { model } : {}),
     },
   });
+  return id;
 }
 
 // ── LLM-as-judge ────────────────────────────────────────────────────────

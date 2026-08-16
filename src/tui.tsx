@@ -70,7 +70,9 @@ export function activityLines(
     if (goal.status !== "active" && goal.status !== "paused") continue;
     const goalAgents =
       goal.status === "active" &&
-      (goal.workerStatus === "running" || goal.workerStatus === "evaluating")
+      (goal.workerStatus === "running" ||
+        goal.workerStatus === "evaluating" ||
+        goal.workerStatus === "compacting")
         ? 1
         : 0;
     lines.push(

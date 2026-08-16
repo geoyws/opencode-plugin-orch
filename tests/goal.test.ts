@@ -25,9 +25,12 @@ class GoalFake {
   summaries: string[] = [];
   deletes: string[] = [];
   aborts: string[] = [];
+  hangSummaries = false;
+  statuses: Record<string, { type: "idle" | "retry" | "busy" }> = {};
   private counter = 0;
 
   session: GoalClient["session"] = {
+    status: async () => ({ data: this.statuses }),
     create: async () => ({ data: { id: `eval_${++this.counter}` } }),
     prompt: async () => ({
       data: {
@@ -54,6 +57,7 @@ class GoalFake {
     },
     summarize: async (opts) => {
       this.summaries.push(opts.path.id);
+      if (this.hangSummaries) await new Promise<never>(() => {});
       return {};
     },
   };
@@ -164,13 +168,81 @@ describe("GoalController", () => {
     e.client.verdict = { verdict: "not_met", reason: "keep going" };
     e.client.messagesBySession.set(goal.workerSessionID!, [assistant("progress", 75)]);
     await e.goals.onSessionIdle(goal.workerSessionID!);
+    await Bun.sleep(0);
     expect(e.client.summaries).toEqual([goal.workerSessionID]);
+    expect(e.store.getGoal("lead")?.workerStatus).toBe("compacting");
+    expect(e.client.continuations).toHaveLength(1);
+
+    // Compaction owns a model turn. Its idle event releases the persisted
+    // evaluator continuation instead of recursively evaluating the summary.
+    await e.goals.onSessionIdle(goal.workerSessionID!);
     expect(e.store.getGoal("lead")?.lastCompactedTokens).toBe(154);
+    expect(e.client.continuations).toHaveLength(2);
 
     e.client.messagesBySession.set(goal.workerSessionID!, [assistant("too much", 300)]);
     await e.goals.onSessionIdle(goal.workerSessionID!);
     expect(e.store.getGoal("lead")?.status).toBe("budget_exhausted");
     expect(e.client.continuations).toHaveLength(2);
+    e.destroy();
+  });
+
+  it("does not deadlock goal continuation when summarize stays pending", async () => {
+    const e = await setup();
+    e.client.hangSummaries = true;
+    const goal = await e.goals.start("lead", "finish", { softTokens: 100, maxTokens: 500 });
+    e.client.verdict = { verdict: "not_met", reason: "fresh evidence required" };
+    e.client.messagesBySession.set(goal.workerSessionID!, [
+      assistant("progress", 75, [
+        { type: "text", text: "progress" },
+        { type: "tool" },
+      ]),
+    ]);
+
+    await Promise.race([
+      e.goals.onSessionIdle(goal.workerSessionID!),
+      Bun.sleep(250).then(() => { throw new Error("idle hook deadlocked on summarize"); }),
+    ]);
+    await Bun.sleep(0);
+    expect(e.client.summaries).toEqual([goal.workerSessionID]);
+    expect(e.store.getGoal("lead")?.pendingContinuation).toContain("fresh evidence required");
+    expect(e.client.continuations).toHaveLength(1);
+
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.workerStatus).toBe("running");
+    expect(e.store.getGoal("lead")?.pendingContinuation).toBeUndefined();
+    expect(e.client.continuations).toHaveLength(2);
+    expect(e.client.continuations[1].text).toContain("fresh evidence required");
+    e.destroy();
+  });
+
+  it("recovers a persisted continuation after reload once compaction is idle", async () => {
+    const e = await setup();
+    const goal = await e.goals.start("lead", "finish", { softTokens: 100, maxTokens: 500 });
+    e.client.verdict = { verdict: "not_met", reason: "fresh evidence required" };
+    e.client.messagesBySession.set(goal.workerSessionID!, [
+      assistant("progress", 75, [
+        { type: "text", text: "progress" },
+        { type: "tool" },
+      ]),
+    ]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    await Bun.sleep(0);
+    expect(e.store.getGoal("lead")?.workerStatus).toBe("compacting");
+
+    // A busy entry means OpenCode is still compacting, so startup recovery
+    // must wait for the normal idle event rather than prompt concurrently.
+    e.client.statuses[goal.workerSessionID!] = { type: "busy" };
+    await e.goals.recover();
+    expect(e.client.continuations).toHaveLength(1);
+
+    // OpenCode removes idle sessions from its status map. After a reload the
+    // absent entry releases the same persisted continuation exactly once.
+    delete e.client.statuses[goal.workerSessionID!];
+    await e.goals.recover();
+    await e.goals.recover();
+    expect(e.client.continuations).toHaveLength(2);
+    expect(e.client.continuations[1].text).toContain("fresh evidence required");
+    expect(e.store.getGoal("lead")?.pendingContinuation).toBeUndefined();
     e.destroy();
   });
 

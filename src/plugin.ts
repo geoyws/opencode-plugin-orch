@@ -202,6 +202,11 @@ async function doInit(
   const toolCount = Object.keys(hooks.tool ?? {}).length;
   reporter.success("[orch]", `ready · ${toolCount} tools`);
 
+  // Hooks must be returned before a recovered worker is prompted so its next
+  // turn can see the complete Orch tool surface. Recovery itself verifies the
+  // worker is idle and consumes the durable continuation exactly once.
+  setTimeout(() => void goals.recover(), 0);
+
   return { hooks, cleanup };
 }
 
