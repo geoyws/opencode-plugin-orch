@@ -23,6 +23,7 @@ export type StepDef = z.infer<typeof StepDef>;
 
 export const WorkflowDef = z
   .object({
+    version: z.literal(1).default(1),
     name: z
       .string()
       .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "name must be kebab-case"),
@@ -129,6 +130,12 @@ export function loadCustomWorkflows(projectDir: string): {
   const errors: string[] = [];
   let files: string[];
   try {
+    for (const candidate of [path.join(projectDir, ".opencode"), dir]) {
+      if (fs.existsSync(candidate) && fs.lstatSync(candidate).isSymbolicLink()) {
+        errors.push(`${candidate}: symlinked workflow directories are refused`);
+        return { workflows, errors };
+      }
+    }
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
   } catch {
     return { workflows, errors }; // no custom dir — fine
@@ -136,6 +143,10 @@ export function loadCustomWorkflows(projectDir: string): {
   for (const file of files.sort()) {
     const fp = path.join(dir, file);
     try {
+      if (fs.lstatSync(fp).isSymbolicLink()) {
+        errors.push(`${file}: symlinked workflow files are refused`);
+        continue;
+      }
       const raw = JSON.parse(fs.readFileSync(fp, "utf-8"));
       const parsed = WorkflowDef.safeParse(raw);
       if (!parsed.success) {

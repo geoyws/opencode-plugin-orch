@@ -1,6 +1,7 @@
 import type { WorkflowDef } from "./loader.js";
 
 export const parallelReview: WorkflowDef = {
+  version: 1,
   name: "parallel-review",
   description:
     "Three reviewers (security, performance, style) examine the input concurrently; an aggregate step synthesizes their findings.",

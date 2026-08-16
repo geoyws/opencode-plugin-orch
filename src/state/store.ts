@@ -1,6 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Run, StepState, Snapshot, StoreEvent } from "./schemas.js";
+import type {
+  GoalState,
+  Run,
+  StepState,
+  Snapshot,
+  StoreEvent,
+} from "./schemas.js";
 
 const SNAPSHOT_INTERVAL_MS = 30_000;
 const EVENTS_FILE = "runs.jsonl";
@@ -16,6 +22,7 @@ export function genID(prefix: string): string {
 export class Store {
   private dir: string;
   private runs = new Map<string, Run>();
+  private goals = new Map<string, GoalState>();
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
   private lastSnapshotTs = 0;
   // Step sessions of runs that were left `running` across a restart,
@@ -41,8 +48,9 @@ export class Store {
       try {
         const raw = fs.readFileSync(snapPath, "utf-8");
         if (raw.length === 0) throw new Error("snapshot is empty");
-        const snap: Snapshot = JSON.parse(raw);
+        const snap = JSON.parse(raw) as Snapshot;
         this.runs = new Map(Object.entries(snap.runs));
+        this.goals = new Map(Object.entries(snap.goals ?? {}));
         this.lastSnapshotTs = snap.timestamp ?? 0;
       } catch (err) {
         console.error(
@@ -52,6 +60,7 @@ export class Store {
         );
         // Reset partial state in case the load threw mid-assignment.
         this.runs = new Map();
+        this.goals = new Map();
         this.lastSnapshotTs = 0;
       }
     }
@@ -59,18 +68,32 @@ export class Store {
     // Replay JSONL events after snapshot timestamp
     await this.replayEvents();
 
-    // Runs are not resumed across restarts: anything left in `running`
-    // (plugin crashed or opencode exited mid-run) is marked failed.
+    // Interrupted runs recover as paused. Completed steps remain authoritative;
+    // only in-flight steps become cancelled and can be retried by Runner.resume.
+    // This creates a safe, explicit restart boundary and avoids spending tokens
+    // until an operator/model resumes the run.
     for (const run of [...this.runs.values()]) {
-      if (run.status === "running") {
+      if (run.status === "running" || run.status === "paused") {
         for (const step of Object.values(run.steps)) {
           if (step.sessionID) {
             this.interruptedSessions.push({ sessionID: step.sessionID });
           }
+          if (step.status === "running") {
+            this.failStep(run.id, {
+              ...step,
+              status: "cancelled",
+              error: "plugin restarted before step completion",
+              completedAt: Date.now(),
+            });
+          }
         }
-        this.failRun(run.id, "plugin restarted");
+        if (run.status === "running") this.pauseRun(run.id);
       }
     }
+
+    // Keep the operator-facing view current even when no recovery event was
+    // emitted. Unlike snapshot.json, this does not compact the event log.
+    this.saveReadModel();
 
     // Start periodic snapshot
     this.snapshotTimer = setInterval(() => this.saveSnapshot(), SNAPSHOT_INTERVAL_MS);
@@ -85,10 +108,7 @@ export class Store {
   }
 
   private saveSnapshot(): void {
-    const snap: Snapshot = {
-      timestamp: Date.now(),
-      runs: Object.fromEntries(this.runs),
-    };
+    const snap = this.currentSnapshot();
     // Atomic snapshot write: write to a temp file then rename. If the
     // process dies mid-write, the old snapshot.json is untouched and
     // the next init reads it cleanly. Without this, a crash during
@@ -101,6 +121,21 @@ export class Store {
     fs.renameSync(tmpPath, snapPath);
     this.lastSnapshotTs = snap.timestamp;
     this.compactLogs();
+  }
+
+  private currentSnapshot(): Snapshot {
+    return {
+      timestamp: Date.now(),
+      runs: Object.fromEntries(this.runs),
+      goals: Object.fromEntries(this.goals),
+    };
+  }
+
+  private saveReadModel(): void {
+    const viewPath = path.join(this.dir, "view.json");
+    const tmpPath = `${viewPath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(this.currentSnapshot()), "utf-8");
+    fs.renameSync(tmpPath, viewPath);
   }
 
   private compactLogs(): void {
@@ -146,7 +181,7 @@ export class Store {
         const run = this.runs.get(d.runID as string);
         // Steps of a finished/cancelled run are ignored — a parallel branch
         // or timed-out session may still report after the run ended.
-        if (!run || run.status !== "running") break;
+        if (!run || !this.runAcceptsStepEvents(run)) break;
         const step = d.step as StepState;
         const updated: Run = {
           ...run,
@@ -159,7 +194,7 @@ export class Store {
       }
       case "run_completed": {
         const run = this.runs.get(d.runID as string);
-        if (!run || run.status !== "running") break;
+        if (!run || !this.runAcceptsStepEvents(run)) break;
         this.runs.set(run.id, {
           ...run,
           status: "completed",
@@ -171,7 +206,7 @@ export class Store {
       }
       case "run_failed": {
         const run = this.runs.get(d.runID as string);
-        if (!run || run.status !== "running") break;
+        if (!run || !this.runAcceptsStepEvents(run)) break;
         this.runs.set(run.id, {
           ...run,
           status: "failed",
@@ -182,7 +217,7 @@ export class Store {
       }
       case "run_cancelled": {
         const run = this.runs.get(d.runID as string);
-        if (!run || run.status !== "running") break;
+        if (!run || !this.runAcceptsStepEvents(run)) break;
         this.runs.set(run.id, {
           ...run,
           status: "cancelled",
@@ -190,7 +225,55 @@ export class Store {
         });
         break;
       }
+      case "run_paused": {
+        const run = this.runs.get(d.runID as string);
+        if (!run || run.status !== "running") break;
+        this.runs.set(run.id, { ...run, status: "paused" });
+        break;
+      }
+      case "run_resumed": {
+        const run = this.runs.get(d.runID as string);
+        if (!run || run.status !== "paused") break;
+        this.runs.set(run.id, { ...run, status: "running" });
+        break;
+      }
+      case "run_budget_exhausted": {
+        const run = this.runs.get(d.runID as string);
+        if (!run || !this.runAcceptsStepEvents(run)) break;
+        this.runs.set(run.id, {
+          ...run,
+          status: "budget_exhausted",
+          error: d.reason as string,
+          completedAt: d.completedAt as number,
+        });
+        break;
+      }
+      case "run_retrying": {
+        const run = this.runs.get(d.runID as string);
+        if (
+          !run ||
+          !["failed", "cancelled"].includes(run.status)
+        ) break;
+        this.runs.set(run.id, {
+          ...run,
+          status: "paused",
+          error: undefined,
+          completedAt: undefined,
+        });
+        break;
+      }
+      case "goal_set":
+      case "goal_updated":
+      case "goal_resolved": {
+        const goal = d.goal as unknown as GoalState;
+        this.goals.set(goal.sessionID, goal);
+        break;
+      }
     }
+  }
+
+  private runAcceptsStepEvents(run: Run): boolean {
+    return run.status === "running" || run.status === "paused";
   }
 
   // ── Event Persistence ─────────────────────────────────────────────
@@ -199,6 +282,7 @@ export class Store {
     const fp = path.join(this.dir, EVENTS_FILE);
     fs.appendFileSync(fp, JSON.stringify(evt) + "\n", "utf-8");
     this.applyEvent(evt);
+    this.saveReadModel();
   }
 
   // ── Run mutations ─────────────────────────────────────────────────
@@ -230,6 +314,38 @@ export class Store {
     this.appendEvent("run_cancelled", { runID, completedAt: Date.now() });
   }
 
+  pauseRun(runID: string): void {
+    this.appendEvent("run_paused", { runID });
+  }
+
+  resumeRun(runID: string): void {
+    this.appendEvent("run_resumed", { runID });
+  }
+
+  exhaustRunBudget(runID: string, reason: string): void {
+    this.appendEvent("run_budget_exhausted", {
+      runID,
+      reason,
+      completedAt: Date.now(),
+    });
+  }
+
+  retryRun(runID: string): void {
+    this.appendEvent("run_retrying", { runID });
+  }
+
+  setGoal(goal: GoalState): void {
+    this.appendEvent("goal_set", { goal });
+  }
+
+  updateGoal(goal: GoalState): void {
+    this.appendEvent("goal_updated", { goal });
+  }
+
+  resolveGoal(goal: GoalState): void {
+    this.appendEvent("goal_resolved", { goal });
+  }
+
   // ── Queries ───────────────────────────────────────────────────────
   getRun(id: string): Run | undefined {
     return this.runs.get(id);
@@ -254,5 +370,13 @@ export class Store {
 
   listRuns(): Run[] {
     return [...this.runs.values()].sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  getGoal(sessionID: string): GoalState | undefined {
+    return this.goals.get(sessionID);
+  }
+
+  listGoals(): GoalState[] {
+    return [...this.goals.values()].sort((a, b) => b.updatedAt - a.updatedAt);
   }
 }

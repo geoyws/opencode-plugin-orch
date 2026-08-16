@@ -215,6 +215,36 @@ describe("custom workflow loader", () => {
     expect(errors).toEqual([]);
   });
 
+  it("validates and atomically saves versioned IR, with explicit shell opt-in", () => {
+    const dir = tmp();
+    const registry = new WorkflowRegistry();
+    registry.loadCustom(dir);
+    const saved = registry.save(validChain);
+    expect(saved.def.version).toBe(1);
+    expect(JSON.parse(fs.readFileSync(saved.path, "utf-8")).version).toBe(1);
+    expect(registry.require("my-chain").version).toBe(1);
+    expect(() => registry.save(validChain)).toThrow(/already exists/);
+
+    const shell = {
+      ...validChain,
+      name: "shell-plan",
+      steps: [{ id: "a", command: "echo safe" }],
+    };
+    expect(() => registry.save(shell)).toThrow(/allowShell=true/);
+    expect(registry.save(shell, { allowShell: true }).def.name).toBe("shell-plan");
+  });
+
+  it("refuses symlinked workflow directories and files", () => {
+    const dir = tmp();
+    const elsewhere = tmp();
+    fs.mkdirSync(path.join(dir, ".opencode"), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(dir, ".opencode", "workflows"));
+    const registry = new WorkflowRegistry();
+    registry.loadCustom(dir);
+    expect(registry.errors.join(" ")).toContain("symlinked workflow directories");
+    expect(() => registry.save(validChain)).toThrow(/symlinked workflow directory/);
+  });
+
   it("registry refuses custom defs that shadow a built-in name", () => {
     const dir = tmp();
     writeCustom(dir, "shadow.json", { ...validChain, name: "chain-draft-refine" });

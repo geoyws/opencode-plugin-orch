@@ -5,6 +5,32 @@ plus the 0.3.0 additions (worktree-isolated test authoring, programmatic
 gates, adversarial review). Everything runs through the `orch_*` tools
 inside an opencode session.
 
+## Goal mode with automatic compaction
+
+```text
+/goal make typecheck and the full non-live test suite pass
+/goal
+/goal clear
+```
+
+The first command activates an independently evaluated loop. A `not_met`
+verdict continues the original session automatically; turn, time, token, cost,
+and no-progress budgets stop runaway work. Configure a cheap DeepSeek evaluator
+and summarizer in the plugin options, or use `orch_goal` for per-goal budgets.
+
+## Author and run a reusable DeepSeek workflow
+
+```text
+/workflow-author review input in parallel for security and performance, then synthesize; use deepseek/deepseek-chat
+/workflow-run my-review src/core/runner.ts
+/workflows
+```
+
+The current model writes version 1 JSON IR, then Orch validates and atomically
+saves it. Generated JavaScript is never executed. Custom workflows default to
+permission prompting; explicitly pass `{"permissionMode":"auto"}` only when
+unattended execution is intended.
+
 ## 1. Discover the workflows
 
 ```
@@ -116,7 +142,15 @@ orch_runs {}
 orch_status { run: "run_m..." }        # id prefixes work
 orch_result { run: "run_m...", format: "detailed" }
 orch_cancel { run: "run_m..." }        # aborts in-flight step sessions
+orch_control { action: "pause", run: "run_m..." }
+orch_control { action: "resume", run: "run_m..." }
+orch_control { action: "retry", run: "run_m..." }
 ```
+
+For token-aware runs, add a config such as
+`{"maxTokens":120000,"softTokens":80000,"maxAgents":12}`. Full outputs remain
+available through `orch_result`; downstream prompts switch to persisted compact
+checkpoints after the soft threshold.
 
 ## Custom workflows
 

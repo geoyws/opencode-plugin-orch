@@ -6,6 +6,36 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### v0.4 goal mode and dynamic workflows
+
+- Added `/goal` and `orch_goal`: session-scoped durable conditions,
+  evidence-only independent evaluation, automatic continuation on `not_met`,
+  `met` / `impossible` outcomes, and turn/time/token/cost/no-progress limits.
+- Added automatic goal-session compaction and deterministic workflow
+  checkpoints. Provider usage remains `unknown` when not reported; raw outputs
+  remain durable while later prompts receive bounded material. Goal accounting
+  stays monotonic across transcript replacement when provider message IDs are
+  available.
+- Added version 1 validated workflow IR authoring through
+  `/workflow-author`, `/workflow-run`, saved-workflow slash commands, and
+  `orch_workflows validate|save`. Writes are atomic and symlink-refusing;
+  shell/gate persistence requires explicit `allowShell` authorization.
+- Added provider-neutral DeepSeek routing for workers, steps, goal evaluators,
+  and summarizers through `{providerID, modelID}` references.
+- Added `orch_control` pause/resume/retry/cancel. Interrupted runs recover as
+  paused, abort orphaned sessions, reuse completed steps, and resume unfinished
+  work.
+- Added observed token/cost budgets (`maxTokens`, `softTokens`, `maxCost`),
+  per-step usage receipts, compact checkpoint status, and the
+  `budget_exhausted` terminal state.
+- Added a separate `./tui` target with a session goal badge and read-only,
+  auto-refreshing goal/workflow dashboard backed by an event-updated atomic
+  read model.
+- Added BRD, PRD, root epic, ADR-009 through ADR-013, and hermetic unit/server
+  coverage for the new lifecycle paths.
+- Live-validated all four paid workflow scenarios with
+  `deepseek/deepseek-v4-pro` through the IFCA-scoped provider profile.
+
 ### Added
 - feat: `orch_inbox` tool — durable peer-DM inbox for the team lead, backed
   by a `leadInboxLastSeenAt` cursor on the team record so messages aren't

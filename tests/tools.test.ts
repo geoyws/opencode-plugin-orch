@@ -20,7 +20,12 @@ let dirs: string[] = [];
 async function env() {
   const e = await makeEnv();
   envs.push(e);
-  const tools = createTools({ runner: e.runner, store: e.store, workflows: e.workflows });
+  const tools = createTools({
+    runner: e.runner,
+    store: e.store,
+    workflows: e.workflows,
+    goals: e.goals,
+  });
   return { e, tools };
 }
 
@@ -166,6 +171,33 @@ describe("orch_workflows", () => {
     expect(
       await call(tools.orch_workflows, { action: "info", name: "nope" })
     ).toStartWith('Error: Workflow "nope" not found.');
+  });
+
+  it("validates and saves model-authored JSON without executing code", async () => {
+    const { e, tools } = await env();
+    const definition = JSON.stringify({
+      version: 1,
+      name: "deepseek-review",
+      description: "Review with DeepSeek",
+      pattern: "chain",
+      steps: [
+        {
+          id: "review",
+          model: { providerID: "deepseek", modelID: "deepseek-chat" },
+          instructions: "Review {{input}}",
+        },
+      ],
+    });
+    expect(await call(tools.orch_workflows, { action: "validate", definition })).toContain(
+      "Valid workflow IR v1"
+    );
+    expect(await call(tools.orch_workflows, { action: "save", definition })).toContain(
+      "Saved workflow IR v1"
+    );
+    expect(e.workflows.require("deepseek-review").steps[0].model).toEqual({
+      providerID: "deepseek",
+      modelID: "deepseek-chat",
+    });
   });
 });
 
@@ -332,6 +364,53 @@ describe("orch_cancel", () => {
   });
 });
 
+describe("orch_control", () => {
+  it("pauses, resumes, cancels, and retries through one lifecycle tool", async () => {
+    const { e, tools } = await env();
+    const started = await call(tools.orch_run, {
+      workflow: "chain-draft-refine",
+      input: "x",
+    });
+    const id = /Run (\S+) started/.exec(started)![1];
+    await waitFor(() => e.client.prompts.length === 1, "step session");
+    expect(await call(tools.orch_control, { action: "pause", run: id })).toContain("paused");
+    expect(e.store.getRun(id)?.status).toBe("paused");
+    expect(await call(tools.orch_control, { action: "resume", run: id })).toContain("resumed");
+    expect(e.store.getRun(id)?.status).toBe("running");
+    expect(await call(tools.orch_control, { action: "cancel", run: id })).toContain("cancelled");
+    expect(e.store.getRun(id)?.status).toBe("cancelled");
+    expect(await call(tools.orch_control, { action: "retry", run: id })).toContain("retrying");
+    await waitFor(() => e.client.prompts.length === 2, "retried first step");
+    e.cursor = 1;
+    await completePrompt(e, "draft retry");
+    await completePrompt(e, "final retry");
+    expect((await waitForRun(e, id)).status).toBe("completed");
+  });
+});
+
+describe("orch_goal", () => {
+  it("sets, reports, and clears a session-scoped DeepSeek goal", async () => {
+    const { tools } = await env();
+    const context = { sessionID: "lead" } as never;
+    const set = (await tools.orch_goal.execute(
+      {
+        action: "set",
+        condition: "tests pass",
+        evaluatorProvider: "deepseek",
+        evaluatorModel: "deepseek-chat",
+      },
+      context
+    )) as string;
+    expect(set).toContain("Goal active: tests pass");
+    expect((await tools.orch_goal.execute({ action: "status" }, context)) as string).toContain(
+      "Evaluator: deepseek/deepseek-chat"
+    );
+    expect((await tools.orch_goal.execute({ action: "clear" }, context)) as string).toContain(
+      "Goal cleared"
+    );
+  });
+});
+
 describe("orch_log", () => {
   function makeLogDir(): string {
     const dir = tmpProject("orch-log-test-");
@@ -389,10 +468,12 @@ describe("orch_log", () => {
 });
 
 describe("createTools", () => {
-  it("wires exactly the 7 orch_* tools", async () => {
+  it("wires exactly the 9 orch_* tools", async () => {
     const { tools } = await env();
     expect(Object.keys(tools).sort()).toEqual([
       "orch_cancel",
+      "orch_control",
+      "orch_goal",
       "orch_log",
       "orch_result",
       "orch_run",

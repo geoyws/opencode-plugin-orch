@@ -1,6 +1,7 @@
 import type { WorkflowDef } from "./loader.js";
 
 export const adversarialReview: WorkflowDef = {
+  version: 1,
   name: "adversarial-review",
   description:
     "A generator produces the deliverable and an adversarial critic attacks it (correctness bugs, security holes, edge cases, spec violations) until it finds nothing, up to 4 iterations. Pin a different/stronger critic model via run config stepModels.",

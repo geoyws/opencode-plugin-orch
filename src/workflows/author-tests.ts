@@ -1,6 +1,7 @@
 import type { WorkflowDef } from "./loader.js";
 
 export const authorTests: WorkflowDef = {
+  version: 1,
   name: "author-tests",
   description:
     "A planner identifies the areas most needing tests (unit / integration / e2e) from the input plus repo layout, workers author the tests in isolated git worktrees (each worker owns a disjoint area), and an aggregate step summarizes what was written. Run test-fix-loop afterwards to make the suite green.",

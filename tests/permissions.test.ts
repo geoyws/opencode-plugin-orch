@@ -87,6 +87,23 @@ describe("isGitMutating", () => {
 });
 
 describe("permission.ask hook", () => {
+  it("defaults model-authored custom workflows to ask", async () => {
+    const e = await makeEnv();
+    envs.push(e);
+    e.workflows.save({
+      version: 1,
+      name: "dynamic-plan",
+      description: "model-authored",
+      pattern: "chain",
+      steps: [{ id: "work", instructions: "work" }],
+    });
+    await e.runner.startRun("dynamic-plan", "x");
+    await waitFor(() => e.client.prompts.length === 1, "custom step session");
+    const sessionID = e.client.prompts[0].sessionID;
+    const hook = createPermissionHook({ runner: e.runner, directory: e.projectDir });
+    expect(await askBash(hook, sessionID, "npm test")).toBeUndefined();
+  });
+
   it("denies git-mutating commands for tracked step sessions", async () => {
     const { hook, sessionID } = await setup();
     expect(await askBash(hook, sessionID, "git commit -m wip")).toBe("deny");

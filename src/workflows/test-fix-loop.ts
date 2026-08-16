@@ -1,6 +1,7 @@
 import type { WorkflowDef } from "./loader.js";
 
 export const testFixLoop: WorkflowDef = {
+  version: 1,
   name: "test-fix-loop",
   description:
     "Writes or fixes tests AND the code under test until the gate command passes (default `npm test`, override via run config gateCommand), up to 5 iterations. On failure the gate output tail is fed back to the generator.",

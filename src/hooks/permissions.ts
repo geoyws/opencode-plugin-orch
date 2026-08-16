@@ -64,6 +64,7 @@ export function createPermissionHook(deps: {
     try {
       if (process.env.ORCH_STEP_PERMISSIONS === "ask" || stepPermissions === "ask") return;
       if (!runner.isStepSession(input.sessionID)) return;
+      if (runner.stepPermissionMode(input.sessionID) === "ask") return;
 
       const command =
         (input.metadata?.command as string) ??

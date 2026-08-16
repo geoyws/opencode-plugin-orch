@@ -1,6 +1,7 @@
 import type { Event } from "@opencode-ai/sdk";
 import type { Runner } from "../core/runner.js";
 import { logHookError } from "./_safe.js";
+import type { GoalController } from "../core/goal-controller.js";
 
 // Format the error payload of a session.error event into a readable string.
 function formatSessionError(error: unknown): string {
@@ -14,15 +15,26 @@ function formatSessionError(error: unknown): string {
 // Drives the workflow runner: a step session going idle means its output is
 // ready to collect; a session error fails the step (and therefore the run).
 // Wrapped so a throw can never propagate into opencode.
-export function createEventHook(deps: { runner: Runner; directory: string }) {
-  const { runner, directory } = deps;
+export function createEventHook(deps: {
+  runner: Runner;
+  goals: GoalController;
+  directory: string;
+}) {
+  const { runner, goals, directory } = deps;
 
   return async ({ event }: { event: Event }): Promise<void> => {
     try {
       switch (event.type) {
-        case "session.idle":
-          await runner.onSessionIdle(event.properties.sessionID);
+        case "session.idle": {
+          const sessionID = event.properties.sessionID;
+          // Capture before runner settlement removes the step from its map.
+          const wasStep = runner.isStepSession(sessionID);
+          await runner.onSessionIdle(sessionID);
+          if (!wasStep && !goals.isEvaluatorSession(sessionID)) {
+            await goals.onSessionIdle(sessionID);
+          }
           break;
+        }
         case "session.error": {
           const sessionID = event.properties.sessionID;
           if (!sessionID) return;

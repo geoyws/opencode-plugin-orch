@@ -18,7 +18,14 @@ export const Pattern = z.enum([
 export type Pattern = z.infer<typeof Pattern>;
 
 // ── Run / step status ─────────────────────────────────────────────────
-export const RunStatus = z.enum(["running", "completed", "failed", "cancelled"]);
+export const RunStatus = z.enum([
+  "running",
+  "paused",
+  "completed",
+  "failed",
+  "cancelled",
+  "budget_exhausted",
+]);
 export type RunStatus = z.infer<typeof RunStatus>;
 
 export const StepStatus = z.enum(["running", "completed", "failed", "cancelled"]);
@@ -46,6 +53,16 @@ export const RunConfig = z.object({
   // Max retries per LLM step for transient provider errors (session.error
   // matching the transient classifier). 0 disables retries.
   stepRetries: z.number().int().min(0).max(3).default(1),
+  // Provider-reported aggregate token budget. A run is stopped before the
+  // next step once completed-step usage reaches the hard limit.
+  maxTokens: z.number().int().positive().optional(),
+  // Context compaction threshold. Completed outputs are reduced to their
+  // deterministic checkpoints once aggregate usage crosses this value.
+  softTokens: z.number().int().positive().optional(),
+  maxCost: z.number().positive().optional(),
+  maxAgents: z.number().int().positive().default(20),
+  maxDurationMs: z.number().int().positive().optional(),
+  permissionMode: z.enum(["ask", "auto"]).default("auto"),
 });
 export type RunConfig = z.infer<typeof RunConfig>;
 
@@ -69,6 +86,20 @@ export const StepState = z.object({
   // LLM step attempt counter (present only once a transient-error retry
   // re-started the step; rides the step_started event).
   attempts: z.number().int().min(1).optional(),
+  // Provider-reported usage. Missing means the provider/session did not
+  // expose usage; it must never be interpreted as zero.
+  usage: z
+    .object({
+      input: z.number().nonnegative().default(0),
+      output: z.number().nonnegative().default(0),
+      reasoning: z.number().nonnegative().default(0),
+      cacheRead: z.number().nonnegative().default(0),
+      cacheWrite: z.number().nonnegative().default(0),
+      cost: z.number().nonnegative().optional(),
+    })
+    .optional(),
+  // Deterministic compact checkpoint retained alongside the raw output.
+  summary: z.string().optional(),
 });
 export type StepState = z.infer<typeof StepState>;
 
@@ -80,6 +111,9 @@ export const Run = z.object({
   input: z.string(),
   status: RunStatus,
   config: RunConfig,
+  // Immutable validated definition resolved at run creation. Recovery uses
+  // this copy even if the saved workflow file changes later.
+  plan: z.unknown().optional(),
   // Steps appear when they start (keyed by step id, insertion-ordered).
   // Evaluator iterations beyond the first use "<step-id>#<n>" ids.
   steps: z.record(z.string(), StepState).default({}),
@@ -93,6 +127,48 @@ export const Run = z.object({
   completedAt: z.number().optional(),
 });
 export type Run = z.infer<typeof Run>;
+
+// ── Session-scoped goals ─────────────────────────────────────────────
+export const GoalStatus = z.enum([
+  "active",
+  "achieved",
+  "impossible",
+  "cleared",
+  "paused",
+  "budget_exhausted",
+]);
+export type GoalStatus = z.infer<typeof GoalStatus>;
+
+export const GoalState = z.object({
+  sessionID: z.string(),
+  condition: z.string().min(1).max(4000),
+  status: GoalStatus,
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  completedAt: z.number().optional(),
+  turns: z.number().int().nonnegative().default(0),
+  observedTokens: z.number().int().nonnegative().optional(),
+  observedCost: z.number().nonnegative().optional(),
+  maxTurns: z.number().int().positive().default(20),
+  maxDurationMs: z.number().int().positive().default(14_400_000),
+  maxTokens: z.number().int().positive().default(250_000),
+  softTokens: z.number().int().positive().default(180_000),
+  maxCost: z.number().positive().optional(),
+  noProgressLimit: z.number().int().positive().default(3),
+  noProgressTurns: z.number().int().nonnegative().default(0),
+  evaluatorModel: ModelRef.optional(),
+  workerModel: ModelRef.optional(),
+  workerAgent: z.string().optional(),
+  lastVerdict: z.enum(["met", "not_met", "impossible"]).optional(),
+  lastReason: z.string().optional(),
+  checkpoint: z.string().optional(),
+  lastCompactedTokens: z.number().int().nonnegative().optional(),
+  // Provider message IDs already included in observedTokens/observedCost.
+  // This keeps accounting monotonic when session summarization removes old
+  // messages from the visible transcript.
+  accountedMessageIDs: z.array(z.string()).default([]),
+});
+export type GoalState = z.infer<typeof GoalState>;
 
 // ── JSONL event wrapper ───────────────────────────────────────────────
 // Event types: run_created, step_started, step_completed, step_failed,
@@ -108,5 +184,6 @@ export type StoreEvent = z.infer<typeof StoreEvent>;
 export const Snapshot = z.object({
   timestamp: z.number(),
   runs: z.record(z.string(), Run),
+  goals: z.record(z.string(), GoalState).default({}),
 });
 export type Snapshot = z.infer<typeof Snapshot>;

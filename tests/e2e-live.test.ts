@@ -216,7 +216,7 @@ describe.skipIf(SKIP)("e2e live: LLM-as-judge (ORCH_LIVE=1, costs real tokens)",
         'Call the orch_run tool ONCE with workflow "chain-draft-refine" and input ' +
           '"Write a one-sentence tagline for a workflow engine that runs AI coding ' +
           "agents. Make it concrete: evoke orchestrating agents through proven " +
-          'workflow patterns, not generic productivity slogans." ' +
+          'workflow patterns, not generic productivity slogans. Use 12 words or fewer." ' +
           "After the tool returns, confirm the run id in one short sentence and stop. " +
           "Do not call any other tool."
       );
@@ -234,6 +234,7 @@ describe.skipIf(SKIP)("e2e live: LLM-as-judge (ORCH_LIVE=1, costs real tokens)",
         .filter((s) => s.trim().length > 0);
       expect(sentences.length, `output: ${output}`).toBeLessThanOrEqual(2);
       expect(sentences.length).toBeGreaterThanOrEqual(1);
+      expect(cleaned.split(/\s+/).filter(Boolean).length, `output: ${output}`).toBeLessThanOrEqual(12);
 
       // Judge: is it actually a good tagline?
       const verdict = await judge(
@@ -241,6 +242,7 @@ describe.skipIf(SKIP)("e2e live: LLM-as-judge (ORCH_LIVE=1, costs real tokens)",
         project,
         [
           "The artifact is a single sentence (not a paragraph, list, or explanation).",
+          "It contains 12 words or fewer.",
           "It reads as a tagline — a concise, memorable product line, not a description of what a tagline would say.",
           "It references workflows and/or AI coding agents (the product's actual subject).",
           "It is anchored to the product (workflows / AI coding agents) rather than pure interchangeable filler — a common tagline-style turn of phrase is acceptable when the line as a whole is clearly about this product.",

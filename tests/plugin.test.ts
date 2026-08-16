@@ -54,11 +54,13 @@ async function statusUntil(
 }
 
 describe("plugin()", () => {
-  it("wires hooks and returns exactly 7 tools", async () => {
+  it("wires hooks and returns exactly 9 tools", async () => {
     const hooks = await plugin(fakeInput(tmp()));
     cleanups.push(() => hooks.dispose?.());
     expect(Object.keys(hooks.tool ?? {}).sort()).toEqual([
       "orch_cancel",
+      "orch_control",
+      "orch_goal",
       "orch_log",
       "orch_result",
       "orch_run",
@@ -67,6 +69,30 @@ describe("plugin()", () => {
       "orch_workflows",
     ]);
     expect(typeof hooks.event).toBe("function");
+  });
+
+  it("registers goal, authoring, run, discovery, and saved-workflow commands", async () => {
+    const hooks = await plugin(fakeInput(tmp()));
+    cleanups.push(() => hooks.dispose?.());
+    const config: { command?: Record<string, unknown> } = {};
+    await hooks.config!(config as never);
+    const names = Object.keys(config.command ?? {});
+    for (const name of [
+      "goal",
+      "workflows",
+      "workflow-author",
+      "workflow-run",
+      "chain-draft-refine",
+    ]) {
+      expect(names).toContain(name);
+    }
+
+    const output = { parts: [{ type: "text", text: "original" }] };
+    await hooks["command.execute.before"]!(
+      { command: "goal", sessionID: "lead", arguments: "all tests pass" },
+      output as never
+    );
+    expect(output.parts[0].text).toContain("Goal: all tests pass");
   });
 
   it("returns {} without throwing when init fails", async () => {
@@ -120,7 +146,7 @@ describe("plugin()", () => {
       stepPermissions: "yolo",
     });
     cleanups.push(() => hooks.dispose?.());
-    expect(Object.keys(hooks.tool ?? {}).length).toBe(7); // init succeeded
+    expect(Object.keys(hooks.tool ?? {}).length).toBe(9); // init succeeded
 
     await hooks.tool!.orch_run.execute(
       { workflow: "chain-draft-refine", input: "hello" },

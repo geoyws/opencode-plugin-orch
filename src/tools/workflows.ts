@@ -4,14 +4,25 @@ import type { WorkflowRegistry } from "../workflows/index.js";
 export function createWorkflowsTool(workflows: WorkflowRegistry): ToolDefinition {
   return tool({
     description:
-      "List available workflow definitions (built-in + custom from " +
-      ".opencode/workflows/*.json), or show one workflow in detail.",
+      "List, inspect, validate, or atomically save versioned workflow IR. " +
+      "Definitions are data, never executable JavaScript.",
     args: {
-      action: tool.schema.enum(["list", "info"]).describe("list | info"),
+      action: tool.schema
+        .enum(["list", "info", "validate", "save"])
+        .describe("list | info | validate | save"),
       name: tool.schema
         .string()
         .optional()
         .describe("Workflow name (required for `info`)"),
+      definition: tool.schema
+        .string()
+        .optional()
+        .describe("Workflow definition as strict JSON (validate/save)"),
+      replace: tool.schema.boolean().optional().describe("Replace an existing custom definition"),
+      allowShell: tool.schema
+        .boolean()
+        .optional()
+        .describe("Explicitly authorize shell/gate nodes in a saved definition"),
     },
     async execute(args) {
       try {
@@ -75,6 +86,29 @@ export function createWorkflowsTool(workflows: WorkflowRegistry): ToolDefinition
               lines.push("", `Isolation: ${def.isolation}`);
             }
             return lines.join("\n");
+          }
+          case "validate":
+          case "save": {
+            if (!args.definition) {
+              return `Error: \`definition\` is required for action=${args.action}`;
+            }
+            let raw: unknown;
+            try {
+              raw = JSON.parse(args.definition);
+            } catch (err) {
+              return `Error: definition is not valid JSON: ${
+                err instanceof Error ? err.message : String(err)
+              }`;
+            }
+            if (args.action === "validate") {
+              const def = workflows.validate(raw);
+              return `Valid workflow IR v${def.version}: ${def.name} [${def.pattern}] (${def.steps.length} step(s)).`;
+            }
+            const saved = workflows.save(raw, {
+              replace: args.replace,
+              allowShell: args.allowShell,
+            });
+            return `Saved workflow IR v${saved.def.version}: ${saved.def.name} [${saved.def.pattern}] at ${saved.path}`;
           }
         }
       } catch (err) {

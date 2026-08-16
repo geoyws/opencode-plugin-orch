@@ -9,11 +9,15 @@ import { createStatusTool } from "./status.js";
 import { createResultTool } from "./result.js";
 import { createCancelTool } from "./cancel.js";
 import { createLogTool } from "./log.js";
+import { createGoalTool } from "./goal.js";
+import type { GoalController } from "../core/goal-controller.js";
+import { createControlTool } from "./control.js";
 
 export interface ToolDeps {
   runner: Runner;
   store: Store;
   workflows: WorkflowRegistry;
+  goals: GoalController;
 }
 
 export function createTools(deps: ToolDeps): Record<string, ToolDefinition> {
@@ -25,5 +29,7 @@ export function createTools(deps: ToolDeps): Record<string, ToolDefinition> {
     orch_result: createResultTool(deps.store),
     orch_cancel: createCancelTool(deps.store, deps.runner),
     orch_log: createLogTool(),
+    orch_goal: createGoalTool(deps.goals),
+    orch_control: createControlTool(deps.store, deps.runner),
   };
 }

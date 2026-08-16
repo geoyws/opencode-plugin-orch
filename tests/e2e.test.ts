@@ -79,6 +79,8 @@ const ORCH_TOOL_IDS = [
   "orch_status",
   "orch_result",
   "orch_cancel",
+  "orch_control",
+  "orch_goal",
   "orch_log",
 ] as const;
 
@@ -90,10 +92,12 @@ const MOCK_MODEL = { providerID: MOCK_PROVIDER, modelID: MOCK_MODEL_ID };
 // Every scenario installs a script: what the lead's first request should do
 // (a tool call), and how to answer step prompts (matched by marker).
 interface MockScript {
-  leadTool: { name: string; args: Record<string, unknown> };
+  leadTool?: { name: string; args: Record<string, unknown> };
   /** When the orch_run tool result comes back, call orch_cancel with the run id. */
   cancelOnRunStart?: boolean;
   steps: Array<{ marker: string; reply: string }>;
+  goalVerdicts?: Array<{ verdict: "met" | "not_met" | "impossible"; reason: string }>;
+  goalReplies?: string[];
 }
 
 interface MockCall {
@@ -111,6 +115,8 @@ const mockCalls: MockCall[] = [];
 let mockScript: MockScript | null = null;
 let cancelIssued = false;
 let mockCallCounter = 0;
+let goalVerdictCounter = 0;
+let goalReplyCounter = 0;
 
 function contentText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -197,6 +203,23 @@ function planCompletion(
   const toolText = toolResultText(messages);
   const text = lastUserText(messages);
 
+  if (mockScript?.goalVerdicts && text.includes("Evaluate whether the goal is met")) {
+    const verdict =
+      mockScript.goalVerdicts[
+        Math.min(goalVerdictCounter++, mockScript.goalVerdicts.length - 1)
+      ];
+    return { chunks: textChunks(JSON.stringify(verdict)), answered: "goal-verdict" };
+  }
+  if (
+    mockScript?.goalReplies &&
+    (text.includes("Work autonomously toward this active Orch goal") ||
+      text.includes("Continue working autonomously toward the active goal"))
+  ) {
+    const reply =
+      mockScript.goalReplies[Math.min(goalReplyCounter++, mockScript.goalReplies.length - 1)];
+    return { chunks: textChunks(reply), answered: "goal-worker" };
+  }
+
   // Follow-up after a tool executed.
   if (toolText.length > 0) {
     if (mockScript?.cancelOnRunStart && !cancelIssued) {
@@ -210,7 +233,7 @@ function planCompletion(
   }
 
   // Step session: step prompts carry the scenario's E2E-* markers.
-  if (mockScript) {
+  if (mockScript?.leadTool) {
     for (const route of mockScript.steps) {
       if (text.includes(route.marker)) {
         return { chunks: textChunks(route.reply), answered: "text" };
@@ -400,6 +423,8 @@ async function driveLead(
   mockScript = script;
   mockCalls.length = 0;
   cancelIssued = false;
+  goalVerdictCounter = 0;
+  goalReplyCounter = 0;
 
   const sess = await client.session.create({
     query: { directory: project },
@@ -414,6 +439,56 @@ async function driveLead(
       model: MOCK_MODEL,
     },
   });
+}
+
+function latestGoal(project: string, sessionID: string): Record<string, unknown> | undefined {
+  const fp = path.join(project, ".opencode", "plugin-orch", "runs.jsonl");
+  if (!fs.existsSync(fp)) return undefined;
+  let latest: Record<string, unknown> | undefined;
+  for (const line of fs.readFileSync(fp, "utf-8").split("\n")) {
+    if (!line) continue;
+    try {
+      const event = JSON.parse(line) as {
+        type: string;
+        data?: { goal?: Record<string, unknown> };
+      };
+      const goal = event.data?.goal;
+      if (event.type.startsWith("goal_") && goal?.sessionID === sessionID) latest = goal;
+    } catch {
+      // Ignore a partial tail line exactly like Store replay.
+    }
+  }
+  return latest;
+}
+
+async function driveGoal(client: OpencodeClient, project: string): Promise<string> {
+  mockScript = {
+    steps: [],
+    goalReplies: ["FIRST-EVIDENCE", "FINAL-EVIDENCE"],
+    goalVerdicts: [
+      { verdict: "not_met", reason: "need final evidence" },
+      { verdict: "met", reason: "final evidence observed" },
+    ],
+  };
+  mockCalls.length = 0;
+  goalVerdictCounter = 0;
+  goalReplyCounter = 0;
+  const created = await client.session.create({
+    query: { directory: project },
+    body: { title: "e2e-goal-lead" },
+  });
+  const sessionID = (created.data as { id: string }).id;
+  await client.session.command({
+    path: { id: sessionID },
+    query: { directory: project },
+    body: {
+      command: "goal",
+      arguments: "produce final evidence",
+      agent: "build",
+      model: `${MOCK_PROVIDER}/${MOCK_MODEL_ID}`,
+    },
+  } as never);
+  return sessionID;
 }
 
 // ── Tier 1 + 2 ──────────────────────────────────────────────────────────
@@ -514,7 +589,7 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
   });
 
   test(
-    "t1: exactly the 7 orch_* tools are registered alongside built-ins",
+    "t1: exactly the 9 orch_* tools are registered alongside built-ins",
     async () => {
       const res = await client.tool.ids({ query: { directory: tier1Project() } });
       const ids = (res.data ?? []) as string[];
@@ -532,7 +607,7 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
       const initLog = path.join(tier1Project(), ".opencode", "plugin-orch", "init.log");
       await waitFor(() => fs.existsSync(initLog), "plugin init.log", 15_000);
       const content = fs.readFileSync(initLog, "utf-8");
-      expect(content).toContain("ready · 7 tools");
+      expect(content).toContain("ready · 9 tools");
       expect(content).not.toContain("ERROR");
     },
     TEST_TIMEOUT_MS
@@ -556,6 +631,30 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
   );
 
   // ── Tier 2 ────────────────────────────────────────────────────────────
+  test(
+    "t2: /goal independently evaluates, auto-continues, and resolves",
+    async () => {
+      const project = makeProject("goal");
+      const sessionID = await driveGoal(client, project);
+      await waitFor(
+        () => latestGoal(project, sessionID)?.status === "achieved",
+        "goal to resolve as achieved",
+        45_000
+      );
+      const goal = latestGoal(project, sessionID)!;
+      expect(goal.status).toBe("achieved");
+      expect(goal.turns).toBe(2);
+      expect(goal.lastVerdict).toBe("met");
+      expect(mockCalls.filter((call) => call.answered === "goal-worker")).toHaveLength(2);
+      expect(mockCalls.filter((call) => call.answered === "goal-verdict")).toHaveLength(2);
+      const secondWorker = mockCalls.find((call) =>
+        call.text.includes("need final evidence")
+      );
+      expect(secondWorker).toBeDefined();
+    },
+    TEST_TIMEOUT_MS
+  );
+
   test(
     "t2: custom workflow JSON is loaded and listed through the real stack",
     async () => {

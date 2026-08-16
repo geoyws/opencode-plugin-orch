@@ -19,7 +19,10 @@ export function createRunTool(runner: Runner): ToolDefinition {
           'Optional JSON config string: {"model":{"providerID":"...","modelID":"..."},' +
             '"maxIterations":N,"concurrency":N,"stepTimeoutMs":N,' +
             '"isolation":"worktree","gateCommand":"...","stepModels":{"<step-id>":{...}},' +
-            '"maxStepOutputChars":N,"keepSessions":bool,"stepRetries":N}. `model` overrides the model for every step;' +
+            '"maxStepOutputChars":N,"keepSessions":bool,"stepRetries":N,' +
+            '"maxTokens":N,"softTokens":N,"maxCost":N,"maxAgents":N,"maxDurationMs":N,"permissionMode":"ask|auto"}. `model` overrides the model for every step; ' +
+            '`maxTokens` prevents the next step after observed usage reaches the hard budget; ' +
+            '`softTokens` switches downstream context to persisted compact checkpoints. ' +
             ' `stepModels` pins a model per step id (wins over step and run model).' +
             ' Step sessions are deleted when their step settles unless `keepSessions` is true.' +
             ' `stepRetries` (0-3, default 1) retries an LLM step on transient provider errors.'

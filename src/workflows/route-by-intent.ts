@@ -1,6 +1,7 @@
 import type { WorkflowDef } from "./loader.js";
 
 export const routeByIntent: WorkflowDef = {
+  version: 1,
   name: "route-by-intent",
   description:
     "Classify the request by intent (code / docs / other) and route it to a specialized handler.",

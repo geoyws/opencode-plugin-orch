@@ -14,6 +14,7 @@ import { Store } from "../src/state/store.js";
 import { Runner, type RunnerClient } from "../src/core/runner.js";
 import { WorkflowRegistry } from "../src/workflows/index.js";
 import type { Reporter } from "../src/core/reporter.js";
+import { GoalController, type GoalClient } from "../src/core/goal-controller.js";
 
 export interface PromptRecord {
   sessionID: string;
@@ -38,7 +39,14 @@ export class FakeClient {
   maxInflight = 0;
   private sessionCounter = 0;
   private titles = new Map<string, string>();
-  private outputs = new Map<string, { text: string; completed: boolean }>();
+  private outputs = new Map<
+    string,
+    {
+      text: string;
+      completed: boolean;
+      usage?: { input?: number; output?: number; reasoning?: number; cacheWrite?: number };
+    }
+  >();
 
   session: RunnerClient["session"] = {
     create: async ({ body }) => {
@@ -82,6 +90,16 @@ export class FakeClient {
             info: {
               role: "assistant",
               ...(out.completed ? { time: { completed: Date.now() } } : {}),
+              ...(out.usage
+                ? {
+                    tokens: {
+                      input: out.usage.input,
+                      output: out.usage.output,
+                      reasoning: out.usage.reasoning,
+                      cache: { write: out.usage.cacheWrite },
+                    },
+                  }
+                : {}),
             },
             parts: [{ type: "text", text: out.text }],
           },
@@ -94,8 +112,19 @@ export class FakeClient {
   tui = { showToast: (_params: unknown) => Promise.resolve({}) };
   app = { log: (_params: unknown) => Promise.resolve({}) };
 
-  setOutput(sessionID: string, text: string, opts?: { completed?: boolean }): void {
-    this.outputs.set(sessionID, { text, completed: opts?.completed ?? false });
+  setOutput(
+    sessionID: string,
+    text: string,
+    opts?: {
+      completed?: boolean;
+      usage?: { input?: number; output?: number; reasoning?: number; cacheWrite?: number };
+    }
+  ): void {
+    this.outputs.set(sessionID, {
+      text,
+      completed: opts?.completed ?? false,
+      usage: opts?.usage,
+    });
   }
 }
 
@@ -135,6 +164,7 @@ export interface Env {
   workflows: WorkflowRegistry;
   client: FakeClient;
   runner: Runner;
+  goals: GoalController;
   /** Index of the next unanswered prompt (advanced by completePrompt). */
   cursor: number;
   destroy: () => void;
@@ -155,12 +185,27 @@ export async function makeEnv(projectDir?: string): Promise<Env> {
     directory: dir,
     reporter: noopReporter,
   });
+  const goals = new GoalController({
+    store,
+    client: client as unknown as GoalClient,
+    directory: dir,
+    reporter: noopReporter,
+    options: {
+      maxTurns: 20,
+      maxDurationMs: 14_400_000,
+      maxTokens: 250_000,
+      softTokens: 180_000,
+      noProgressLimit: 3,
+      evidenceChars: 12_000,
+    },
+  });
   return {
     projectDir: dir,
     store,
     workflows,
     client,
     runner,
+    goals,
     cursor: 0,
     destroy: () => {
       runner.destroy();
@@ -179,7 +224,8 @@ export async function makeEnv(projectDir?: string): Promise<Env> {
 export async function completePrompt(
   env: Env,
   output: string,
-  at?: number
+  at?: number,
+  opts?: { usage?: { input?: number; output?: number; reasoning?: number; cacheWrite?: number } }
 ): Promise<PromptRecord> {
   const idx = at ?? env.cursor;
   await waitFor(
@@ -189,7 +235,7 @@ export async function completePrompt(
   env.cursor = idx + 1;
   const rec = env.client.prompts[idx];
   env.client.inflight--;
-  env.client.setOutput(rec.sessionID, output);
+  env.client.setOutput(rec.sessionID, output, opts);
   await env.runner.onSessionIdle(rec.sessionID);
   return rec;
 }
@@ -198,7 +244,7 @@ export async function completePrompt(
 export async function waitForRun(env: Env, runID: string) {
   await waitFor(() => {
     const s = env.store.getRun(runID)?.status;
-    return s === "completed" || s === "failed" || s === "cancelled";
+    return s === "completed" || s === "failed" || s === "cancelled" || s === "budget_exhausted";
   }, `run ${runID} to finish`);
   return env.store.getRun(runID)!;
 }

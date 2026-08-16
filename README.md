@@ -1,20 +1,22 @@
 # opencode-plugin-orch
 
-Workflow engine plugin for [OpenCode](https://opencode.ai). Runs Anthropic-style agentic workflows — the patterns from [Building effective agents](https://www.anthropic.com/research/building-effective-agents) — as sets of ephemeral opencode sessions, without forking opencode.
+Provider-neutral goal and workflow engine for [OpenCode](https://opencode.ai). It runs Claude-workflow-style patterns as ephemeral OpenCode sessions and adds an independently evaluated `/goal` loop. Any OpenCode model reference works, including DeepSeek.
 
 ## What it does
 
-Adds 7 tools to your opencode session:
+Adds 9 tools to your opencode session:
 
 | Tool | Purpose |
 |---|---|
-| `orch_run` | Start a workflow run. Executes in the background as ephemeral opencode sessions (one per step invocation). Optional JSON `config` string — see [run configuration](#run-configuration) for all keys: `model`, `maxIterations`, `concurrency`, `stepTimeoutMs`, `isolation`, `gateCommand`, `stepModels`, `maxStepOutputChars` |
-| `orch_workflows` | List available workflow definitions (built-in + custom), or show one in detail (`action: "list" \| "info"`) |
+| `orch_run` | Start a workflow run. Executes in the background as ephemeral opencode sessions (one per step invocation). Optional JSON `config` string — see [run configuration](#run-configuration) for model routing, limits, isolation, retries, permissions, and token/cost budgets |
+| `orch_workflows` | List, inspect, validate, and atomically save versioned workflow IR (`list` / `info` / `validate` / `save`) |
 | `orch_runs` | List workflow runs, newest first. Optional `status` filter and `limit` |
 | `orch_status` | Run detail: pattern, status, per-step state, current iteration (evaluator), timing. Accepts a run id or unique id prefix |
 | `orch_result` | Final output of a run. `summary` (default), `detailed` (every step output), or `json` (raw run record) |
 | `orch_cancel` | Cancel a running run: aborts in-flight step sessions and marks the run cancelled |
 | `orch_log` | Inspect the current opencode log for plugin output — `tail` / `errors` / `stats` |
+| `orch_goal` | Set, inspect, or clear the initiating session's autonomous completion condition |
+| `orch_control` | Pause at a safe boundary, resume (including after restart), retry a terminal failed/cancelled run, or cancel it |
 
 Eight built-in workflows:
 
@@ -32,11 +34,14 @@ Eight built-in workflows:
 Features:
 
 - **Event-driven runs** — `orch_run` returns immediately; the `event` hook drives each run forward on `session.idle` (collect the step output, start the next step) and fails the run on `session.error`. Steps also have a 10-minute timeout.
+- **Goal mode** — `/goal <condition>` independently evaluates bounded evidence after each lead turn and continues the same session on `not_met`; `/goal` reports status and `/goal clear` stops it.
+- **Automatic token economy** — provider-reported input, output, reasoning, cache-read, cache-write, and cost are persisted. Soft thresholds switch later prompts to compact checkpoints; hard token/cost limits stop before another step or turn. Unknown usage remains explicitly unknown.
 - **Ephemeral step sessions** — every step invocation is one throwaway opencode session titled `orch/<run-id>/<step-id>`. No persistent members, no shared state between steps except what the runner passes via prompt templates.
 - **Session teardown** — step sessions are deleted when their step settles (success, failure, cancel, timeout), and orphaned sessions from runs interrupted by a restart are aborted and deleted on plugin init. Set `keepSessions: true` in the run config to keep them for debugging.
 - **Event-sourced run store** — run/step state is a JSONL event log (`run_created`, `step_started`, `step_completed`, `step_failed`, `run_completed`, `run_failed`, `run_cancelled`) with a periodic atomic snapshot, persisted under `.opencode/plugin-orch/` in your project.
-- **Restart safety** — on plugin init, any run left in `running` (plugin crashed or opencode exited mid-run) is marked `failed` with reason "plugin restarted". Runs are not resumed across restarts in 0.2.0.
-- **Hardened init + error reporting** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `.opencode/plugin-orch/init.log`). All hooks and tools are wrapped so throws can't break opencode; every tool returns `Error: <msg>` strings on failure. On startup you see `[orch] ready · 7 tools` as a success toast.
+- **Restart-safe resume** — interrupted runs recover as `paused`; completed steps are reused, the interrupted invocation is cancelled, and `orch_control resume` continues from the first unfinished step.
+- **Hardened init + error reporting** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `.opencode/plugin-orch/init.log`). All hooks and tools are wrapped so throws can't break opencode; every tool returns `Error: <msg>` strings on failure. On startup you see `[orch] ready · 9 tools` as a success toast.
+- **Separate TUI target** — `opencode-plugin-orch/tui` adds a live session goal badge and a read-only workflow/goal dashboard without coupling the server engine to OpenTUI.
 - **Worktree isolation** — parallel/orchestrator fan-out steps can run in per-step git worktrees (sibling dir `.orch-worktrees/`) with copy-back on success, so concurrent writers don't stomp on each other. See [Worktree isolation](#worktree-isolation).
 - **Shell steps and gates** — steps can be plain shell commands, and evaluator loops can gate on a real command (e.g. `npm test`) instead of only a critic model. See [Shell steps and gates](#shell-steps-and-gates).
 - **Per-step models and output caps** — `stepModels` pins any step to its own model; `maxStepOutputChars` caps how much step output feeds later prompts. See [choosing models](#choosing-models) and [run configuration](#run-configuration).
@@ -93,9 +98,35 @@ For per-step control, `orch_run`'s config takes `stepModels` — a map of step i
 {"stepModels": {"critic": {"providerID": "...", "modelID": "..."}}}
 ```
 
-Related knob: `maxStepOutputChars` (default 50000, minimum 1000) caps how much of a step's output is injected into subsequent prompts. Full outputs stay in the run store; only the prompt-bound copy is truncated, with a `\n[... truncated N chars]` marker. Gate feedback is separately capped at 4000 chars.
+Related knob: `maxStepOutputChars` (default 50000, minimum 1000) caps how much of a step's output is injected into subsequent prompts. Full outputs stay in the run store; the prompt-bound copy keeps bounded head and tail evidence with an explicit compaction marker. Gate feedback is separately capped at 4000 chars.
 
 A note on evidence: the live-test logs in [ADR-001](docs/adr/ADR-001-model-choice-for-live-testing.md) were captured with MiniMax M2.7 driving the **old team-orchestration model (0.1.x)**. They prove the plugin load path and the LLM tool-call loop work end-to-end with that model, but they predate the 0.2.0 workflow engine — don't read them as end-to-end verification of the new engine. Any opencode-supported provider can drive the plugin.
+
+DeepSeek needs no adapter or hard-coded provider name. Use the provider/model identifiers shown by your OpenCode model picker. A typical run override is:
+
+```json
+{
+  "model": { "providerID": "deepseek", "modelID": "deepseek-chat" },
+  "stepModels": {
+    "critic": { "providerID": "deepseek", "modelID": "deepseek-reasoner" }
+  },
+  "maxTokens": 120000,
+  "softTokens": 80000
+}
+```
+
+The goal evaluator and automatic summarizer can use a cheaper DeepSeek model independently:
+
+```json
+{
+  "plugin": [["../../work/src/opencode-plugin-orch", {
+    "goalEvaluatorModel": { "providerID": "deepseek", "modelID": "deepseek-chat" },
+    "goalSummarizerModel": { "providerID": "deepseek", "modelID": "deepseek-chat" },
+    "goalSoftTokens": 80000,
+    "goalMaxTokens": 120000
+  }]]
+}
+```
 
 ### 4. Verify it loads
 
@@ -105,7 +136,7 @@ From any directory:
 opencode run "What orch_* tools do you have available?"
 ```
 
-The model should list all 7 tools (orch_run, orch_workflows, orch_runs, orch_status, orch_result, orch_cancel, orch_log).
+The model should list all 9 tools, including `orch_goal` and `orch_control`.
 
 Check the plugin loaded cleanly:
 
@@ -118,7 +149,7 @@ LOG_DIR="$HOME/Library/Application Support/opencode/log"
 ls -t "$LOG_DIR" | head -1 | xargs -I{} grep -E "orch|plugin" "$LOG_DIR/{}"
 ```
 
-You want to see **`[orch] ready · 7 tools`** and **zero `plugin has no server entrypoint` warnings**. If something's off, see [Troubleshooting](#troubleshooting) below.
+You want to see **`[orch] ready · 9 tools`** and **zero `plugin has no server entrypoint` warnings**. If something's off, see [Troubleshooting](#troubleshooting) below.
 
 ### 5. Your first run
 
@@ -189,7 +220,11 @@ There is no platform-specific code path — the resolved absolute path just happ
 
 ## Using it
 
-Just talk to your model in natural language — the 7 `orch_*` tools are in its toolbelt. One example per built-in workflow:
+Use `/goal all tests pass and the built artifact loads` to start an autonomous completion loop. `/goal` reports its turns, elapsed time, observed usage, evaluator, and last verdict; `/goal clear` ends it. Goal continuation keeps the initiating session's model, agent, and permission policy.
+
+Use `/workflow-author <task>` to have the current model—including DeepSeek—produce strict version 1 IR, validate it, and save it under `.opencode/workflows/`. `/workflow-run <name> <input>` starts it, while `/workflows` shows definitions and runs. Saved workflow names are also registered as slash commands.
+
+Or talk to your model in natural language—the 9 `orch_*` tools are in its toolbelt. One example per built-in workflow:
 
 ### chain-draft-refine
 
@@ -255,6 +290,12 @@ A gate-only evaluator: the `generator` writes or fixes tests AND the code under 
 | `maxStepOutputChars` | integer ≥ 1000 | 50000 | cap on step-output text injected into later prompts; full outputs stay in the store |
 | `keepSessions` | boolean | false | keep step sessions after their step settles (debugging); by default they are deleted on settle |
 | `stepRetries` | integer 0–3 | 1 | retries an LLM step when its session fails with a transient error (rate limit / 429 / overload / network / 502–504 class): 5s backoff, fresh session per attempt. Command steps, gates, timeouts, and cancels are never retried |
+| `maxTokens` | positive integer | unset | hard provider-reported token budget; prevents the next unfinished step after the limit is reached |
+| `softTokens` | positive integer | 75% of `maxTokens` | switch downstream prompt assembly to persisted compact checkpoints |
+| `maxCost` | positive number | unset | hard provider-reported cost budget; unknown provider costs are never treated as zero |
+| `maxAgents` | positive integer | 20 | maximum parallel workers or planner-emitted subtasks |
+| `maxDurationMs` | positive integer | unset | wall-clock run budget checked before each unfinished step |
+| `permissionMode` | `"ask"` or `"auto"` | custom: `ask`; built-in: `auto` | custom/model-authored workflows require normal prompts unless autonomous mode is explicitly selected |
 
 ## Custom workflows
 
@@ -262,6 +303,7 @@ Drop your own definitions into `.opencode/workflows/*.json` in your project — 
 
 ```json
 {
+  "version": 1,
   "name": "my-chain",
   "description": "Summarize, then translate to German.",
   "pattern": "chain",
@@ -274,6 +316,7 @@ Drop your own definitions into `.opencode/workflows/*.json` in your project — 
 
 Schema:
 
+- `version` — currently `1` (legacy definitions without it are normalized to version 1)
 - `name` — unique, kebab-case
 - `pattern` — `chain` | `routing` | `parallel` | `orchestrator` | `evaluator`
 - `steps[]` — `{ id, instructions?, command?, agent?, model? }` (`agent` defaults to `build`; `model` is `{ "providerID": "...", "modelID": "..." }`). Every step needs `instructions` (an LLM step) or `command` (a shell step — see [Shell steps and gates](#shell-steps-and-gates)); if both are set, `command` wins
@@ -290,7 +333,9 @@ Prompt-template placeholders, rendered before each step session is prompted:
 - `{{steps.<id>.output}}` — output of any completed step (aggregate steps)
 - `{{feedback}}` — the critic's last critique, fed back to the generator (evaluator)
 
-One orchestrator caveat: worker step ids are dynamic (`worker-1..N`), so they can't be named in a static aggregate template. The runner appends each worker's output to the aggregate prompt as a `## Result of worker-N` section instead.
+One orchestrator caveat: worker step ids are dynamic (`worker-1..N`), so they can't be named in a static aggregate template. The runner appends each worker's bounded output to the aggregate prompt as a `## Result of worker-N` section instead.
+
+`orch_workflows action=save` performs an atomic write and refuses symlinked workflow directories/files. Model-authored shell steps and gates are rejected unless the caller explicitly sets `allowShell: true`; generated JavaScript is never evaluated.
 
 ## Worktree isolation
 
@@ -325,7 +370,7 @@ After each generator iteration the gate command runs in the project dir; exit 0 
 
 ## Autonomous permissions for step sessions
 
-Workflow steps run as background sessions with nobody watching, so a permission prompt would stall the run. The plugin's `permission.ask` hook therefore auto-decides permissions for runner-tracked step sessions:
+Built-in workflow steps run as background sessions with nobody watching, so a permission prompt would stall the run. Their default `permissionMode` is `auto`, and the plugin's `permission.ask` hook decides permissions as follows:
 
 - **Auto-allowed**: everything else — file edits, arbitrary bash, fetches — without prompting.
 - **Denied**: git-mutating bash commands, because only the lead should change repository state — `git commit`, `push`, `merge`, `rebase`, `reset --hard`, `clean`, `stash`, `cherry-pick`, `revert`, `branch -d/-D/-m/-M`, `tag -d`, `checkout`, `switch`, `restore`, and `worktree remove`. Read-only git commands (`status`, `log`, `diff`, `show`, `blame`, `branch`/`tag` listing, `ls-files`, `rev-parse`) are never denied.
@@ -344,6 +389,8 @@ Two switches disable the auto-allow and get normal prompts back — either one i
 
 `stepPermissions` accepts `"auto"` (the default — the behavior described above) or `"ask"`; unknown values log a warning and fall back to `"auto"`.
 
+Saved/model-authored custom workflows default to `permissionMode: "ask"`. To run one unattended, the caller must explicitly pass `{"permissionMode":"auto"}` in `orch_run` config; the Git-mutation denylist still applies. The global `stepPermissions: "ask"` and `ORCH_STEP_PERMISSIONS=ask` switches always win.
+
 Be honest with yourself about the blast radius: an auto-allowed step session can run arbitrary bash without prompting — the denylist only covers git state, not `rm`, network calls, or package installs. Only run workflows you trust, in repositories where uncommitted work is expendable.
 
 ## Monitoring + teardown
@@ -352,8 +399,10 @@ Be honest with yourself about the blast radius: an auto-allowed step session can
 > "Show `orch_status` for run `run_m…`" — id prefixes work; per-step state, iteration, timing
 > "Get `orch_result` for that run in detailed format" — final output plus every step output
 > "Cancel that run" — aborts in-flight step sessions and marks the run cancelled
+> "Pause that run" — lets an in-flight invocation settle, then starts no new steps
+> "Resume that run" — reuses completed steps, including after an OpenCode restart
 
-Run history survives restarts (event-sourced store), but a run that was still `running` when the plugin stopped comes back as `failed` — runs are not resumed.
+Run history survives restarts. A run interrupted while `running` comes back `paused`; its old live session is aborted/deleted, and resume starts at the first unfinished step. The event log remains authoritative, `snapshot.json` is the periodically compacted recovery fast path, and `view.json` is updated atomically after each event so the TUI does not wait for the snapshot interval.
 
 ## Development
 
@@ -366,13 +415,16 @@ pnpm run typecheck      # tsc --noEmit
 
 The test suite is at `tests/`, driven by `bun test` with a fake opencode client (records `session.create` / `promptAsync`, lets the test fire `session.idle` / `session.error` with canned assistant messages):
 
-- `store.test.ts` — event append, snapshot, replay; running → failed on reload
+- `store.test.ts` — event append, snapshot, replay, and running → paused recovery
 - `workflows.test.ts` — Zod validation (bad defs rejected), custom loader, placeholder rendering
 - `runner.test.ts` — all 5 patterns end-to-end against the fake client: chain ordering, routing label matching, parallel concurrency + aggregate, orchestrator planner JSON parsing + workers, evaluator PASS loop and budget exhaustion, gate pass/fail feedback, command steps, cancel, step timeout
 - `worktree.test.ts` — porcelain parsing, the add/copy-back/remove lifecycle against real git repos in temp dirs, and worktree-isolated runs (poll fallback, conflicts, `isolationFallback`)
 - `permissions.test.ts` — the git-mutation matcher (mutating denied, read-only allowed) and the `permission.ask` hook policy (step sessions auto-allowed, non-step sessions untouched, `ORCH_STEP_PERMISSIONS=ask` escape hatch)
-- `tools.test.ts` — all 7 tools with the same fake-client harness
-- `plugin.test.ts` — init wires hooks, returns 7 tools, init failure returns `{}` without throwing
+- `goal.test.ts` — independent verdicts, automatic continuation, compaction,
+  monotonic usage across transcript replacement, and budgets
+- `tools.test.ts` — all 9 tools with the same fake-client harness
+- `plugin.test.ts` — init wires hooks/commands, returns 9 tools, init failure returns `{}` without throwing
+- `tui.test.ts` — separate target load smoke test
 
 `tests/e2e.test.ts` runs against a **real in-process opencode server** (spawned via `createOpencode()`, plugin injected through config — no fake client). It has two tiers: **tier 1** boots the server and verifies plugin load (tool registration, init log, SSE endpoint); **tier 2** drives full workflow runs through the real stack against a mock LLM — a tiny in-process OpenAI-compatible chat-completions server scripted to make the lead session call `orch_run`/`orch_cancel` and to answer step prompts — asserting on the plugin's own store (`runs.jsonl`) and the mock's request log. Both tiers are hermetic (redirected `HOME`, seeded opencode caches, dead external proxy; requires the `opencode` binary on PATH and a built `dist/`) and run as part of plain `bun test`; `pnpm run test:e2e` runs just this file.
 
@@ -384,8 +436,10 @@ The test suite is at `tests/`, driven by `bun test` with a fake opencode client 
 src/
 ├── plugin.ts                  # entry point — init wrapped in a 5s timeout + error boundary
 ├── index.ts                   # exports the plugin module (named `server` export)
+├── tui.tsx                    # separate OpenTUI target: badge + durable dashboard
 ├── core/
 │   ├── runner.ts              # workflow engine — pattern dispatch, step sessions, cancel
+│   ├── goal-controller.ts     # session-scoped evaluator/continuation state machine
 │   ├── worktree.ts            # git worktree lifecycle — add/remove, porcelain parse, copy-back
 │   ├── exec.ts                # /bin/sh -c + execFile helpers (shell steps, gates, git)
 │   └── reporter.ts            # multi-sink error/status reporter
@@ -398,8 +452,9 @@ src/
 │   └── schemas.ts             # Zod schemas (run, step, config, events)
 ├── tools/
 │   ├── run.ts / workflows.ts / runs.ts / status.ts / result.ts / cancel.ts
+│   ├── goal.ts / control.ts   # goal and pause/resume/cancel lifecycle tools
 │   ├── log.ts                 # opencode log inspector (tail / errors / stats)
-│   └── index.ts               # tool registry (7 tools)
+│   └── index.ts               # tool registry (9 tools)
 └── workflows/
     ├── index.ts               # registry: built-ins + custom defs
     ├── loader.ts              # def schema, template rendering, .opencode/workflows loader
@@ -413,6 +468,8 @@ src/
     └── test-fix-loop.ts       # evaluator built-in (gate: npm test)
 
 docs/
+├── BRD.md / PRD.md            # business and product requirements for v0.4
+├── ../EPIC.md                 # implementation epic and acceptance criteria
 ├── workflow-spec.md           # authoritative spec for the 0.2.0 design
 ├── spec-v0.3-addendum.md      # 0.3.0 additions: isolation, gates, stepModels, permissions
 └── adr/                       # architecture decision records (ADR-001, 003, 006, 007)

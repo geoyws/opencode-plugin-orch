@@ -69,6 +69,12 @@ describe("Store event append", () => {
     expect(got.steps.draft.status).toBe("completed");
     expect(got.steps.draft.output).toBe("draft text");
 
+    const view = JSON.parse(
+      fs.readFileSync(path.join(storeDir(dir), "view.json"), "utf-8")
+    ) as { runs: Record<string, Run> };
+    expect(view.runs.run_a1.status).toBe("completed");
+    expect(view.runs.run_a1.output).toBe("final output");
+
     const lines = fs
       .readFileSync(path.join(storeDir(dir), "runs.jsonl"), "utf-8")
       .split("\n")
@@ -170,13 +176,13 @@ describe("Store snapshot + replay", () => {
     const store = new Store(dir);
     stores.push(store);
     await store.init(); // must not throw
-    // run_created replayed, then marked failed because it was left running.
-    expect(store.getRun("run_f1")!.status).toBe("failed");
+    // run_created replayed, then recovered at an explicit paused boundary.
+    expect(store.getRun("run_f1")!.status).toBe("paused");
   });
 });
 
 describe("Store recovery", () => {
-  it("marks runs left `running` as failed (plugin restarted) on reload", async () => {
+  it("recovers runs as paused and marks only the interrupted step cancelled", async () => {
     const { store, dir } = await makeStore();
     store.createRun(makeRun("run_g1"));
     store.startStep("run_g1", {
@@ -192,8 +198,11 @@ describe("Store recovery", () => {
     stores.push(store2);
     await store2.init();
     const got = store2.getRun("run_g1")!;
-    expect(got.status).toBe("failed");
-    expect(got.error).toBe("plugin restarted");
+    expect(got.status).toBe("paused");
+    expect(got.error).toBeUndefined();
+    expect(got.steps.draft.status).toBe("cancelled");
+    expect(got.steps.draft.error).toContain("plugin restarted");
+    expect(store2.interruptedSessions).toEqual([{ sessionID: "sess_9" }]);
   });
 });
 

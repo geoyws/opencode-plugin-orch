@@ -1,6 +1,7 @@
 import type { WorkflowDef } from "./loader.js";
 
 export const evaluatorLoop: WorkflowDef = {
+  version: 1,
   name: "evaluator-loop",
   description:
     "A generator produces output and a critic evaluates it in a loop (up to 3 iterations) until the critic replies PASS.",

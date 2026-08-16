@@ -1,6 +1,7 @@
 import type { WorkflowDef } from "./loader.js";
 
 export const orchestrateTasks: WorkflowDef = {
+  version: 1,
   name: "orchestrate-tasks",
   description:
     "A planner breaks the task into subtasks, worker sessions execute them concurrently, and an aggregate step synthesizes the results.",

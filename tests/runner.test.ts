@@ -330,6 +330,26 @@ describe("run control", () => {
     expect(e.client.aborts).toContain(sid);
   });
 
+  it("pauses at the next safe boundary and resumes without repeating work", async () => {
+    const e = await env();
+    const run = await e.runner.startRun("chain-draft-refine", "x");
+    await waitFor(() => e.client.prompts.length === 1, "first step");
+    e.runner.pause(run.id);
+    expect(e.store.getRun(run.id)?.status).toBe("paused");
+
+    await completePrompt(e, "draft done");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(e.client.prompts).toHaveLength(1);
+    expect(e.store.getRun(run.id)?.steps.draft.status).toBe("completed");
+
+    e.runner.resume(run.id);
+    await waitFor(() => e.client.prompts.length === 2, "resumed second step");
+    await completePrompt(e, "final");
+    const done = await waitForRun(e, run.id);
+    expect(done.status).toBe("completed");
+    expect(Object.keys(done.steps)).toEqual(["draft", "refine"]);
+  });
+
   it("session.error fails the run", async () => {
     const e = await env();
     const run = await e.runner.startRun("chain-draft-refine", "x");
@@ -574,13 +594,54 @@ describe("model and output config", () => {
 
     await completePrompt(e, big);
     const pb = await completePrompt(e, "done");
-    expect(pb.text).toContain("x".repeat(1000));
-    expect(pb.text).toContain("[... truncated 500 chars]");
+    expect(pb.text).toContain("x".repeat(450));
+    expect(pb.text).toContain("[... compacted 580 chars ...]");
     expect(pb.text).not.toContain(big);
 
     const done = await waitForRun(e, run.id);
     expect(done.status).toBe("completed");
     expect(done.steps.a.output).toBe(big); // full output stays in the store
+  });
+
+  it("hard token budget prevents the next step and records provider usage", async () => {
+    const e = await env();
+    const run = await e.runner.startRun("chain-draft-refine", "x", {
+      maxTokens: 100,
+      softTokens: 75,
+    });
+    await completePrompt(e, "draft", undefined, {
+      usage: { input: 80, output: 25, reasoning: 5, cacheWrite: 2 },
+    });
+    const done = await waitForRun(e, run.id);
+    expect(done.status).toBe("budget_exhausted");
+    expect(done.error).toContain("112/100");
+    expect(e.client.prompts).toHaveLength(1);
+    expect(done.steps.draft.usage).toEqual({
+      input: 80,
+      output: 25,
+      reasoning: 5,
+      cacheRead: 0,
+      cacheWrite: 2,
+    });
+  });
+
+  it("soft token threshold injects the persisted compact checkpoint", async () => {
+    const e = await env();
+    const big = `HEAD-${"x".repeat(5988)}-TAIL`;
+    const run = await e.runner.startRun("chain-draft-refine", "x", {
+      maxTokens: 1000,
+      softTokens: 50,
+      maxStepOutputChars: 10_000,
+    });
+    await completePrompt(e, big, undefined, {
+      usage: { input: 40, output: 20 },
+    });
+    const next = await completePrompt(e, "done");
+    expect(next.text).toContain("checkpoint compacted");
+    expect(next.text).not.toContain(big);
+    const done = await waitForRun(e, run.id);
+    expect(done.steps.draft.output).toBe(big);
+    expect(done.steps.draft.summary?.length).toBeLessThan(big.length);
   });
 });
 
@@ -683,13 +744,13 @@ describe("session teardown", () => {
     const sid = e1.client.prompts[0].sessionID;
     e1.store.destroy(); // flush snapshot with the run still `running`
 
-    // Reload in the same project dir: the store marks the run failed and
+    // Reload in the same project dir: the store pauses the run and
     // collects the orphaned step session for the sweep.
     const e2 = await makeEnv(dir);
     envs.push(e2);
     const got = e2.store.getRun(run.id)!;
-    expect(got.status).toBe("failed");
-    expect(got.error).toBe("plugin restarted");
+    expect(got.status).toBe("paused");
+    expect(got.steps.draft.status).toBe("cancelled");
 
     e2.runner.sweepInterruptedSessions();
     expect(e2.client.aborts).toContain(sid);
@@ -703,6 +764,64 @@ describe("session teardown", () => {
     e2.destroy();
     e1.destroy();
     await new Promise((r) => setTimeout(r, 10));
+    rmrf(dir);
+  });
+
+  it("resumes after restart from completed steps without replaying them", async () => {
+    const dir = tmpProject();
+    const e1 = await makeEnv(dir);
+    envs.push(e1);
+    const now = Date.now();
+    e1.store.createRun({
+      id: "run_recover_1",
+      workflow: "chain-draft-refine",
+      pattern: "chain",
+      input: "x",
+      status: "running",
+      config: {
+        maxIterations: 3,
+        concurrency: 4,
+        stepTimeoutMs: 600_000,
+        maxStepOutputChars: 50_000,
+        keepSessions: false,
+        stepRetries: 1,
+      },
+      steps: {
+        draft: {
+          id: "draft",
+          status: "completed",
+          output: "saved draft",
+          summary: "saved draft",
+          startedAt: now,
+          completedAt: now,
+        },
+        refine: {
+          id: "refine",
+          status: "running",
+          sessionID: "orphan_refine",
+          startedAt: now,
+        },
+      },
+      iteration: 0,
+      createdAt: now,
+    });
+    e1.store.destroy();
+
+    const e2 = await makeEnv(dir);
+    envs.push(e2);
+    expect(e2.store.getRun("run_recover_1")?.status).toBe("paused");
+    e2.runner.resume("run_recover_1");
+    const prompt = await completePrompt(e2, "refined after restart");
+    expect(prompt.stepID).toBe("refine");
+    expect(prompt.text).toContain("saved draft");
+    const done = await waitForRun(e2, "run_recover_1");
+    expect(done.status).toBe("completed");
+    expect(done.output).toBe("refined after restart");
+    expect(e2.client.prompts).toHaveLength(1);
+
+    envs = envs.filter((x) => x !== e1 && x !== e2);
+    e2.destroy();
+    e1.runner.destroy();
     rmrf(dir);
   });
 });

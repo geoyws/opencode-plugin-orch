@@ -48,7 +48,17 @@ export interface RunnerClient {
       query?: { directory?: string };
     }): Promise<{
       data?: Array<{
-        info: { role: string; time?: { completed?: number } };
+        info: {
+          role: string;
+          time?: { completed?: number };
+          cost?: number;
+          tokens?: {
+            input?: number;
+            output?: number;
+            reasoning?: number;
+            cache?: { read?: number; write?: number };
+          };
+        };
         parts: Array<{ type: string; text?: string }>;
       }>;
     }>;
@@ -74,6 +84,12 @@ export const RunConfigOverrides = z.object({
   keepSessions: z.boolean().optional(),
   // Max retries per LLM step for transient provider errors. 0 disables.
   stepRetries: z.number().int().min(0).max(3).optional(),
+  maxTokens: z.number().int().positive().optional(),
+  softTokens: z.number().int().positive().optional(),
+  maxCost: z.number().positive().optional(),
+  maxAgents: z.number().int().positive().optional(),
+  maxDurationMs: z.number().int().positive().optional(),
+  permissionMode: z.enum(["ask", "auto"]).optional(),
 });
 export type RunConfigOverrides = z.infer<typeof RunConfigOverrides>;
 
@@ -107,6 +123,7 @@ const TRANSIENT_ERROR =
 // Internal marker: the step's session died with a transient provider error
 // and invokeStep may retry it as a fresh session. Never written to the store.
 class TransientStepError extends Error {}
+class BudgetExceededError extends Error {}
 
 // Routing: first route key (insertion order) that appears as a standalone
 // word in the classifier output wins, case-insensitive.
@@ -140,13 +157,29 @@ export function extractJsonArray(text: string): unknown[] {
 
 // Last assistant message's concatenated text parts, or undefined when the
 // session has no assistant message yet.
-function extractLastAssistantText(messages: MessagesData): string | undefined {
+function extractLastAssistant(messages: MessagesData):
+  | { output: string; usage?: NonNullable<StepState["usage"]> }
+  | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].info.role === "assistant") {
-      return messages[i].parts
+      const output = messages[i].parts
         .filter((p) => p.type === "text")
         .map((p) => p.text ?? "")
         .join("");
+      const tokens = messages[i].info.tokens;
+      const cost = messages[i].info.cost;
+      const usage =
+        tokens || typeof cost === "number"
+          ? {
+              input: tokens?.input ?? 0,
+              output: tokens?.output ?? 0,
+              reasoning: tokens?.reasoning ?? 0,
+              cacheRead: tokens?.cache?.read ?? 0,
+              cacheWrite: tokens?.cache?.write ?? 0,
+              ...(typeof cost === "number" ? { cost } : {}),
+            }
+          : undefined;
+      return { output, usage };
     }
   }
   return undefined;
@@ -192,6 +225,8 @@ export class Runner {
   // `<runID>/<stepID>` — tracked so cancel() can write their terminal
   // step event instead of leaving them `running` in the store.
   private retryBackoff = new Map<string, { runID: string; stepID: string }>();
+  private pauseWaiters = new Map<string, Set<() => void>>();
+  private activeRuns = new Set<string>();
   private destroyed = false;
   /** Backoff between step retries in ms (tests shrink it). */
   retryDelayMs = 5000;
@@ -229,6 +264,17 @@ export class Runner {
       maxStepOutputChars: o.maxStepOutputChars ?? 50_000,
       keepSessions: o.keepSessions ?? false,
       stepRetries: o.stepRetries ?? 1,
+      maxTokens: o.maxTokens,
+      softTokens:
+        o.softTokens === undefined
+          ? o.maxTokens === undefined
+            ? undefined
+            : Math.floor(o.maxTokens * 0.75)
+          : Math.min(o.softTokens, o.maxTokens ?? o.softTokens),
+      maxCost: o.maxCost,
+      maxAgents: o.maxAgents ?? 20,
+      maxDurationMs: o.maxDurationMs,
+      permissionMode: o.permissionMode ?? (this.deps.workflows.isCustom(workflowName) ? "ask" : "auto"),
     });
 
     const run: Run = {
@@ -238,6 +284,7 @@ export class Runner {
       input,
       status: "running",
       config,
+      plan: def,
       steps: {},
       iteration: 0,
       createdAt: Date.now(),
@@ -246,6 +293,7 @@ export class Runner {
 
     // Drive the pattern in the background; terminal state is written to the
     // store by execute(). Errors never escape.
+    this.activeRuns.add(run.id);
     void this.execute(run.id, def, config);
 
     return run;
@@ -254,7 +302,7 @@ export class Runner {
   async cancel(runID: string): Promise<void> {
     const run = this.deps.store.getRun(runID);
     if (!run) throw new Error(`Run ${runID} not found`);
-    if (run.status !== "running") {
+    if (run.status !== "running" && run.status !== "paused") {
       throw new Error(`Run ${runID} is already ${run.status}`);
     }
 
@@ -334,7 +382,54 @@ export class Runner {
       }
     }
     this.deps.store.cancelRun(runID);
+    this.wakePaused(runID);
     await Promise.all(aborts);
+  }
+
+  pause(runID: string): void {
+    const run = this.deps.store.getRun(runID);
+    if (!run) throw new Error(`Run ${runID} not found`);
+    if (run.status !== "running") throw new Error(`Run ${runID} is already ${run.status}`);
+    this.deps.store.pauseRun(runID);
+  }
+
+  resume(runID: string): void {
+    const run = this.deps.store.getRun(runID);
+    if (!run) throw new Error(`Run ${runID} not found`);
+    if (run.status !== "paused") throw new Error(`Run ${runID} is ${run.status}, not paused`);
+    const active = this.activeRuns.has(runID);
+    const def = active
+      ? undefined
+      : run.plan
+        ? this.deps.workflows.validate(run.plan)
+        : this.deps.workflows.require(run.workflow);
+    this.deps.store.resumeRun(runID);
+    if (active) {
+      this.wakePaused(runID);
+    } else {
+      this.activeRuns.add(runID);
+      void this.execute(runID, def!, run.config);
+    }
+  }
+
+  async retry(runID: string): Promise<void> {
+    const run = this.deps.store.getRun(runID);
+    if (!run) throw new Error(`Run ${runID} not found`);
+    if (run.status !== "failed" && run.status !== "cancelled") {
+      throw new Error(`Run ${runID} is ${run.status}, not failed or cancelled`);
+    }
+    // A terminal event can precede execute()'s finally by a microtask. Wait a
+    // bounded interval so an old execution cannot race the retried lifecycle.
+    const deadline = Date.now() + 1000;
+    while (this.activeRuns.has(runID) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    if (this.activeRuns.has(runID)) {
+      throw new Error(`Run ${runID} is still settling; retry shortly`);
+    }
+    this.deps.workflows.require(run.workflow);
+    this.deps.store.retryRun(runID);
+    this.resume(runID);
   }
 
   /** Clear all pending step timers (plugin shutdown / dispose). */
@@ -348,11 +443,19 @@ export class Runner {
     for (const cmd of this.commands.values()) cmd.kill();
     this.commands.clear();
     this.retryBackoff.clear();
+    for (const runID of this.pauseWaiters.keys()) this.wakePaused(runID);
   }
 
   /** True while the given session belongs to an in-flight step. */
   isStepSession(sessionID: string): boolean {
     return this.pending.has(sessionID);
+  }
+
+  stepPermissionMode(sessionID: string): "ask" | "auto" | undefined {
+    const entry = this.pending.get(sessionID);
+    return entry
+      ? this.deps.store.getRun(entry.runID)?.config.permissionMode
+      : undefined;
   }
 
   // ── Event entry points (called from the `event` hook) ─────────────
@@ -367,11 +470,11 @@ export class Runner {
         path: { id: sessionID },
         query: { directory: entry.directory },
       });
-      const output = extractLastAssistantText(res.data ?? []);
-      if (output === undefined) {
+      const assistant = extractLastAssistant(res.data ?? []);
+      if (assistant === undefined) {
         throw new Error(`step "${entry.stepID}" produced no assistant message`);
       }
-      await this.settleStepSuccess(entry, output);
+      await this.settleStepSuccess(entry, assistant.output, assistant.usage);
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
       await this.settleStepFailure(entry, e);
@@ -402,10 +505,9 @@ export class Runner {
     }
   }
 
-  // Best-effort teardown of step sessions orphaned by a restart: runs left
-  // `running` are marked failed by Store.init ("plugin restarted"), but their
-  // opencode sessions may still be alive and burning tokens. keepSessions
-  // does not apply — those runs are dead. Called once from plugin init.
+  // Best-effort teardown of step sessions orphaned by a restart. Store.init
+  // recovers their runs as paused, but the old sessions may still be alive and
+  // burning tokens. keepSessions does not apply to interrupted invocations.
   sweepInterruptedSessions(): void {
     for (const { sessionID } of this.deps.store.interruptedSessions) {
       void Promise.resolve(
@@ -464,7 +566,12 @@ export class Runner {
       // Steps of a cancelled run reject after run_cancelled was written
       // (e.g. a killed command step) — don't clobber the terminal state
       // with a late run_failed event in the log.
-      if (this.deps.store.getRun(runID)?.status === "running") {
+      if (err instanceof BudgetExceededError) {
+        const status = this.deps.store.getRun(runID)?.status;
+        if (status === "running" || status === "paused") {
+          this.deps.store.exhaustRunBudget(runID, msg);
+        }
+      } else if (this.deps.store.getRun(runID)?.status === "running") {
         this.deps.store.failRun(runID, msg);
       }
       if (this.deps.store.getRun(runID)?.status === "failed") {
@@ -472,6 +579,7 @@ export class Runner {
       }
     } finally {
       this.touched.delete(runID);
+      this.activeRuns.delete(runID);
     }
   }
 
@@ -484,7 +592,7 @@ export class Runner {
     for (const step of def.steps) {
       const prompt = renderTemplate(step.instructions ?? "", {
         input: this.runInput(runID),
-        output: this.cap(output, config),
+        output: this.cap(output, config, runID),
         steps: this.cappedStepOutputs(runID, config),
       });
       output = await this.invokeStep(runID, step, step.id, prompt, config);
@@ -526,7 +634,7 @@ export class Runner {
         step.id,
         renderTemplate(step.instructions ?? "", {
           input,
-          output: this.cap(output, config),
+          output: this.cap(output, config, runID),
           steps: this.cappedStepOutputs(runID, config),
         }),
         config
@@ -541,6 +649,11 @@ export class Runner {
     config: RunConfig
   ): Promise<string> {
     const input = this.runInput(runID);
+    if (def.steps.length > config.maxAgents) {
+      throw new Error(
+        `parallel workflow has ${def.steps.length} workers; maxAgents is ${config.maxAgents}`
+      );
+    }
     const isolated = config.isolation === "worktree";
     await mapLimit(def.steps, config.concurrency, async (step) => {
       await this.invokeStep(
@@ -585,6 +698,11 @@ export class Runner {
       return instructions;
     });
     if (tasks.length === 0) throw new Error("planner returned an empty subtask list");
+    if (tasks.length > config.maxAgents) {
+      throw new Error(
+        `planner returned ${tasks.length} subtasks; maxAgents is ${config.maxAgents}`
+      );
+    }
 
     const isolated = config.isolation === "worktree";
     await mapLimit(tasks, config.concurrency, async (instructions, i) => {
@@ -639,7 +757,7 @@ export class Runner {
         genStepID,
         renderTemplate(generator.instructions ?? "", {
           input,
-          feedback: this.cap(feedback, config),
+          feedback: this.cap(feedback, config, runID),
         }),
         config,
         iter
@@ -670,7 +788,7 @@ export class Runner {
           evalStepID,
           renderTemplate(critic.instructions ?? "", {
             input,
-            output: this.cap(output, config),
+            output: this.cap(output, config, runID),
           }),
           config,
           iter
@@ -700,10 +818,16 @@ export class Runner {
     iteration?: number,
     opts?: { isolated?: boolean }
   ): Promise<string> {
+    await this.waitUntilRunnable(runID);
     const run = this.deps.store.getRun(runID);
     if (!run || run.status !== "running") {
       throw new Error(`run ${runID} is no longer running (${run?.status ?? "not found"})`);
     }
+    const previous = this.stepRecord(runID, stepID);
+    if (previous?.status === "completed" && previous.output !== undefined) {
+      return previous.output;
+    }
+    this.assertWithinBudget(runID, config);
 
     // Worktree isolation (parallel/orchestrator fan-out steps only). Any
     // failure of `git worktree add` (not a repo, no commits) falls back to
@@ -759,7 +883,7 @@ export class Runner {
         if (!(err instanceof TransientStepError) || attempt >= maxAttempts) throw err;
         // Cancelled / shut down while the previous attempt died: no retry.
         const runNow = this.deps.store.getRun(runID);
-        if (this.destroyed || !runNow || runNow.status !== "running") throw err;
+        if (this.destroyed || !runNow || !["running", "paused"].includes(runNow.status)) throw err;
         // Back off (unref'd — never holds the process open), tracked so
         // cancel() can write the terminal step event in this window.
         const key = `${runID}/${stepID}`;
@@ -792,6 +916,7 @@ export class Runner {
     attempt: number,
     maxAttempts: number
   ): Promise<string> {
+    await this.waitUntilRunnable(runID);
     const run = this.deps.store.getRun(runID);
     if (!run || run.status !== "running") {
       throw new Error(`run ${runID} is no longer running (${run?.status ?? "not found"})`);
@@ -998,11 +1123,11 @@ export class Runner {
     this.pending.delete(sessionID);
     this.clearStepTimers(entry);
     try {
-      const output = extractLastAssistantText(messages);
-      if (output === undefined) {
+      const assistant = extractLastAssistant(messages);
+      if (assistant === undefined) {
         throw new Error(`step "${entry.stepID}" produced no assistant message`);
       }
-      await this.settleStepSuccess(entry, output);
+      await this.settleStepSuccess(entry, assistant.output, assistant.usage);
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
       await this.settleStepFailure(entry, e);
@@ -1013,7 +1138,11 @@ export class Runner {
 
   // Shared success path: copy back worktree changes (if any), write the
   // completed step record, resolve the step promise.
-  private async settleStepSuccess(entry: PendingStep, output: string): Promise<void> {
+  private async settleStepSuccess(
+    entry: PendingStep,
+    output: string,
+    usage?: NonNullable<StepState["usage"]>
+  ): Promise<void> {
     let extra: Partial<StepState> = {};
     if (entry.worktreePath) {
       extra = await this.finalizeWorktree(entry.runID, entry.stepID, entry.worktreePath);
@@ -1024,6 +1153,8 @@ export class Runner {
         ...prev,
         status: "completed",
         output,
+        summary: this.compactCheckpoint(output),
+        ...(usage ? { usage } : {}),
         completedAt: Date.now(),
         ...extra,
       });
@@ -1104,11 +1235,20 @@ export class Runner {
   }
 
   // Output cap: full outputs stay in the store; only text injected into
-  // subsequent prompts is truncated.
-  private cap(text: string, config: RunConfig): string {
+  // subsequent prompts is deterministically compacted. Head + tail retains
+  // decisions and final receipts better than a head-only truncation.
+  private cap(text: string, config: RunConfig, runID?: string): string {
+    if (
+      runID &&
+      config.softTokens !== undefined &&
+      (this.aggregateUsage(runID) ?? -1) >= config.softTokens
+    ) {
+      return this.compactCheckpoint(text);
+    }
     const max = config.maxStepOutputChars;
     if (text.length <= max) return text;
-    return `${text.slice(0, max)}\n[... truncated ${text.length - max} chars]`;
+    const half = Math.max(1, Math.floor((max - 80) / 2));
+    return `${text.slice(0, half)}\n[... compacted ${text.length - half * 2} chars ...]\n${text.slice(-half)}`;
   }
 
   private cappedStepOutputs(
@@ -1118,7 +1258,19 @@ export class Runner {
     const steps = this.stepOutputs(runID);
     const out: Record<string, { output?: string }> = {};
     for (const [id, s] of Object.entries(steps)) {
-      out[id] = { output: s.output === undefined ? undefined : this.cap(s.output, config) };
+      const aggregate = this.aggregateUsage(runID);
+      const compact =
+        config.softTokens !== undefined &&
+        aggregate !== undefined &&
+        aggregate >= config.softTokens;
+      out[id] = {
+        output:
+          s.output === undefined
+            ? undefined
+            : compact && s.summary
+              ? s.summary
+              : this.cap(s.output, config),
+      };
     }
     return out;
   }
@@ -1131,7 +1283,7 @@ export class Runner {
     return this.deps.store.getRun(runID)?.steps[stepID];
   }
 
-  private stepOutputs(runID: string): Record<string, { output?: string }> {
+  private stepOutputs(runID: string): Record<string, StepState> {
     return this.deps.store.getRun(runID)?.steps ?? {};
   }
 
@@ -1144,5 +1296,87 @@ export class Runner {
       error,
       completedAt: Date.now(),
     });
+  }
+
+  private compactCheckpoint(text: string): string {
+    const max = 4000;
+    if (text.length <= max) return text;
+    const half = Math.floor((max - 80) / 2);
+    return `${text.slice(0, half)}\n[... checkpoint compacted ${text.length - half * 2} chars ...]\n${text.slice(-half)}`;
+  }
+
+  private aggregateUsage(runID: string): number | undefined {
+    const steps = Object.values(this.deps.store.getRun(runID)?.steps ?? {});
+    let known = false;
+    let total = 0;
+    for (const step of steps) {
+      if (!step.usage) continue;
+      known = true;
+      total +=
+        step.usage.input +
+        step.usage.output +
+        step.usage.reasoning +
+        step.usage.cacheWrite;
+    }
+    return known ? total : undefined;
+  }
+
+  private assertWithinBudget(runID: string, config: RunConfig): void {
+    const run = this.deps.store.getRun(runID);
+    if (
+      config.maxDurationMs !== undefined &&
+      run &&
+      Date.now() - run.createdAt >= config.maxDurationMs
+    ) {
+      throw new BudgetExceededError(
+        `time budget exhausted (${Date.now() - run.createdAt}/${config.maxDurationMs}ms); no new step started`
+      );
+    }
+    const used = this.aggregateUsage(runID);
+    if (config.maxTokens !== undefined && used !== undefined && used >= config.maxTokens) {
+      throw new BudgetExceededError(
+        `token budget exhausted (${used}/${config.maxTokens}); no new step started`
+      );
+    }
+    const cost = this.aggregateCost(runID);
+    if (config.maxCost !== undefined && cost !== undefined && cost >= config.maxCost) {
+      throw new BudgetExceededError(
+        `cost budget exhausted (${cost}/${config.maxCost}); no new step started`
+      );
+    }
+  }
+
+  private aggregateCost(runID: string): number | undefined {
+    const costs = Object.values(this.deps.store.getRun(runID)?.steps ?? {})
+      .map((step) => step.usage?.cost)
+      .filter((cost): cost is number => cost !== undefined);
+    return costs.length > 0 ? costs.reduce((sum, cost) => sum + cost, 0) : undefined;
+  }
+
+  private async waitUntilRunnable(runID: string): Promise<void> {
+    for (;;) {
+      if (this.destroyed) throw new Error("plugin shutting down");
+      const run = this.deps.store.getRun(runID);
+      if (!run) throw new Error(`run ${runID} not found`);
+      if (run.status === "running") return;
+      if (run.status !== "paused") {
+        throw new Error(`run ${runID} is no longer runnable (${run.status})`);
+      }
+      await new Promise<void>((resolve) => {
+        let waiters = this.pauseWaiters.get(runID);
+        if (!waiters) {
+          waiters = new Set();
+          this.pauseWaiters.set(runID, waiters);
+        }
+        waiters.add(resolve);
+      });
+    }
+  }
+
+  private wakePaused(runID: string): void {
+    const waiters = this.pauseWaiters.get(runID);
+    if (!waiters) return;
+    this.pauseWaiters.delete(runID);
+    for (const resolve of waiters) resolve();
   }
 }
