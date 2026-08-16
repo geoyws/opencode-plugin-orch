@@ -179,7 +179,7 @@ and exposes durable progress and controls after the initiating turn ends.
 - [x] Publish atomic bundled generations and reload server/TUI lifecycles.
 - [x] Prove the installed server, TUI statusline, reload, steering, recovery,
       and paid/live provider paths end to end.
-- [ ] Rebuild local installations, commit, and push the verified release.
+- [x] Rebuild local installations, commit, and push the verified release.
 
 Future native work is not part of this epic. It requires production-like
 profiling, a bounded hotspot, a new ADR, full behavioral parity, portable
