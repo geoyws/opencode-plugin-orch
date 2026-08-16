@@ -33,8 +33,8 @@ progress view.
    material, cached checkpoints, and explicit budgets.
 5. Maintain user control through transparent plans, permissions, pause/resume,
    cancellation, and durable evidence.
-6. Reduce deterministic orchestration CPU and memory overhead through a
-   benchmark-gated Rust kernel without breaking OpenCode compatibility.
+6. Keep the runtime portable and operationally simple, optimizing measured
+   bottlenecks without imposing an unproven native deployment burden.
 
 ## Stakeholders
 
@@ -86,13 +86,14 @@ reported as complete merely because state exists.
 Commands, tools, and an optional TUI show current work, elapsed time, nodes,
 tokens, budgets, compact checkpoints, failures, and resulting evidence.
 
-### BR-8: Native efficiency with compatibility
+### BR-8: Runtime efficiency and portability
 
-Deterministic state, scheduling, persistence, and budget operations migrate to
-Rust only when differential fixtures prove behavior parity and release
-benchmarks prove a material CPU/throughput improvement. The JavaScript/
-TypeScript surface remains only where required by the OpenCode and OpenTUI
-plugin ABIs.
+The production runtime remains TypeScript so every supported OpenCode
+installation uses the same package and host ABI. Optimize measured hotspots in
+TypeScript first. A bounded native implementation is considered only when
+production-like profiling identifies material local resource cost, differential
+fixtures prove parity, and release benchmarks prove at least 2x throughput or
+50% lower CPU time after integration overhead.
 
 ## Success measures
 

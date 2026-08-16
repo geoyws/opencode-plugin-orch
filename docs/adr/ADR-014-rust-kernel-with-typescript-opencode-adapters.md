@@ -1,6 +1,6 @@
 # ADR-014: Rust kernel with TypeScript OpenCode adapters
 
-**Status:** Accepted
+**Status:** Superseded by ADR-015
 **Date:** 2026-08-16
 **Deciders:** Orch maintainers and operator
 
@@ -78,6 +78,7 @@ benchmarked on their own workloads.
 
 ## References
 
+- ADR-015 TypeScript-first runtime with profile-guided native optimization
 - `docs/PRD.md`
 - `EPIC.md`
 - `crates/orch-core/`

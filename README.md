@@ -42,7 +42,7 @@ Features:
 - **Restart-safe resume** — interrupted runs recover as `paused`; completed steps are reused, the interrupted invocation is cancelled, and `orch_control resume` continues from the first unfinished step.
 - **Hardened init + error reporting** — plugin init is wrapped in a 5-second timeout with a multi-sink Reporter (TUI toast → opencode app.log → local `.opencode/plugin-orch/init.log`). All hooks and tools are wrapped so throws can't break opencode; every tool returns `Error: <msg>` strings on failure. On startup you see `[orch] ready · 9 tools` as a success toast.
 - **Separate TUI target** — `opencode-plugin-orch/tui` adds a persistent multi-row prompt-side activity badge for the active goal, each workflow's elapsed time, and active agent counts, plus a read-only workflow/goal dashboard, without coupling the server engine to OpenTUI.
-- **Rust kernel migration** — v0.5 is moving deterministic state, scheduling, budgets, and projections into `crates/orch-core`, retaining only the TypeScript adapters required by OpenCode/OpenTUI. ADR-014 requires differential parity and measured native wins before each cutover.
+- **Portable TypeScript runtime** — workflows, goals, persistence, compaction, budgets, and projections stay in TypeScript across all OpenCode installations. The slower Rust activity prototype remains an unlinked benchmark fixture; ADR-015 requires profiling and a material measured win before any bounded native production proposal.
 - **Worktree isolation** — parallel/orchestrator fan-out steps can run in per-step git worktrees (sibling dir `.orch-worktrees/`) with copy-back on success, so concurrent writers don't stomp on each other. See [Worktree isolation](#worktree-isolation).
 - **Shell steps and gates** — steps can be plain shell commands, and evaluator loops can gate on a real command (e.g. `npm test`) instead of only a critic model. See [Shell steps and gates](#shell-steps-and-gates).
 - **Per-step models and output caps** — `stepModels` pins any step to its own model; `maxStepOutputChars` caps how much step output feeds later prompts. See [choosing models](#choosing-models) and [run configuration](#run-configuration).
@@ -508,6 +508,13 @@ See [`docs/adr/`](docs/adr/) for architecture decision records:
 - [ADR-006](docs/adr/ADR-006-workflows-redesign.md) — Rebuild as a workflow engine (supersedes ADR-002/004/005)
 - [ADR-007](docs/adr/ADR-007-worktree-isolation-and-autonomy.md) — Worktree isolation, programmatic gates, and autonomous step-session permissions
 - [ADR-008](docs/adr/ADR-008-tracking-opencode-latest.md) — Track the latest opencode, experimental APIs included (fix-forward policy)
+- [ADR-009](docs/adr/ADR-009-session-scoped-goal-controller.md) — Session-scoped goal controller
+- [ADR-010](docs/adr/ADR-010-validated-workflow-ir.md) — Validated dynamic workflow IR
+- [ADR-011](docs/adr/ADR-011-provider-neutral-deepseek-routing.md) — Provider-neutral DeepSeek routing
+- [ADR-012](docs/adr/ADR-012-separate-server-and-tui-entrypoints.md) — Separate server and TUI entrypoints
+- [ADR-013](docs/adr/ADR-013-token-budgets-and-compact-checkpoints.md) — Token budgets and compact checkpoints
+- [ADR-014](docs/adr/ADR-014-rust-kernel-with-typescript-opencode-adapters.md) — Superseded Rust-kernel migration proposal
+- [ADR-015](docs/adr/ADR-015-typescript-first-runtime-with-profile-guided-native-optimization.md) — TypeScript-first runtime with profile-guided native optimization
 
 ## License
 

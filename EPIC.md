@@ -148,7 +148,7 @@ and exposes durable progress and controls after the initiating turn ends.
 - **Provider drift:** model references remain provider-neutral and live tests
   are opt-in.
 
-## Follow-on epic: Rust kernel and real CLI parity (v0.5)
+## Follow-on epic: CLI parity, observability, and runtime efficiency (v0.5)
 
 - [x] Reproduce the installed `opencode run` teardown abort with IFCA DeepSeek.
 - [x] Add an actual-binary E2E covering planner, two workers, aggregation,
@@ -159,12 +159,14 @@ and exposes durable progress and controls after the initiating turn ends.
       total active agents in a compact multi-row prompt indicator.
 - [x] Establish `crates/orch-core` with native activity projection, tests, and
       a release benchmark.
-- [ ] Cut over activity projection only if it clears the native performance
-      gate; the initial Rust prototype was slower than Bun and remains unused.
-- [ ] Add the N-API bridge and cross-platform native artifact build matrix.
-- [ ] Migrate workflow IR validation and event-store transitions with golden
-      TypeScript/Rust differential fixtures.
-- [ ] Migrate scheduler patterns, budget/retry decisions, recovery, and goal
-      evaluation after each parity gate passes.
-- [ ] Remove the TypeScript kernel fallback only after restart, installed-CLI,
-      TUI, and paid DeepSeek parity receipts pass on supported platforms.
+- [x] Reject the activity-projection cutover because the Rust prototype was
+      slower than Bun/TypeScript on the agreed fixture.
+- [x] Keep TypeScript as the complete production runtime and supersede the
+      broad Rust migration in ADR-015.
+- [x] Retain the Rust crate and comparison benchmark as reproducible research,
+      without adding an N-API bridge, native artifact matrix, or runtime
+      fallback.
+
+Future native work is not part of this epic. It requires production-like
+profiling, a bounded hotspot, a new ADR, full behavioral parity, portable
+installation, and a measured win that clears ADR-015's release gate.

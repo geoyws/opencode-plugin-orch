@@ -1,6 +1,6 @@
 # Product Requirements Document: Goal mode and dynamic workflows
 
-**Status:** v0.4 implemented; v0.5 Rust-kernel migration in progress
+**Status:** v0.4 implemented; v0.5 reliability and observability hardening
 **Date:** 2026-08-16
 **Target release:** v0.4.0
 
@@ -158,25 +158,27 @@ observable through tools, slash commands, and an optional TUI.
 - README describes limitations and differentiates hermetic E2E from live model
   receipts.
 
-## v0.5 native-kernel requirements
+## v0.5 runtime and lifecycle requirements
 
-- Keep TypeScript only where required by the OpenCode/OpenTUI plugin ABI; move
-  deterministic orchestration and persistence into `crates/orch-core`.
-- Use an in-process N-API boundary when compatibility tests pass. Never spawn a
-  fresh native process for every event or status refresh.
-- Preserve byte-compatible reading of existing workflow definitions, event
-  logs, snapshots, compact checkpoints, and TUI read models.
-- Ship golden differential fixtures for every migrated state transition and
-  workflow pattern before switching its default implementation to Rust.
+- Keep workflow execution, goal control, persistence, compaction, budgets, and
+  TUI projections in the portable TypeScript production runtime.
+- Keep `crates/orch-core` as an unlinked experimental benchmark fixture; it is
+  not a production dependency and does not require an N-API bridge or native
+  artifact matrix.
+- Optimize TypeScript algorithms and I/O first when profiling identifies a
+  material local bottleneck.
+- Require a new ADR before introducing any native production slice. It must
+  include production-like profiling, golden parity fixtures, portable install
+  design, and a release benchmark proving at least 2x throughput or 50% lower
+  CPU time after boundary overhead.
 - `orch_run` waits for a terminal/paused outcome by default so `opencode run`
   cannot dispose active child agents. `background: true` is restricted to
   persistent interactive/server sessions.
 - The prompt indicator uses multiple rows when needed: goal state, one row per
   active workflow with elapsed wall time and per-run active-agent count, plus a
   total-agent row for concurrent workflows.
-- Measure kernel time separately from model/network/command time. A Rust slice
-  replaces its TypeScript counterpart only after at least 2x throughput or 50%
-  lower CPU time on the agreed release benchmark and full behavior parity.
+- Measure local runtime time separately from model/network/command time. Do not
+  infer end-to-end workflow improvement from a language or microbenchmark alone.
 - Required E2E boundaries are: SDK-hosted real OpenCode server, actual installed
   `opencode run --command` process lifecycle, restart/replay, TUI projection,
   and opt-in paid IFCA DeepSeek workflows including an orchestrator fan-out.
