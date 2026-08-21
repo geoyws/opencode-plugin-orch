@@ -17,6 +17,8 @@ import {
 } from "./worktree.js";
 import type { Reporter } from "./reporter.js";
 import { tokenTotal } from "./usage.js";
+import { parseStructuredOutput } from "./structured-output.js";
+import type { OutputContract } from "../workflows/loader.js";
 
 // Structural client interface — the subset of the opencode SDK the runner
 // uses. Declared structurally (instead of importing the SDK client type) so
@@ -106,9 +108,10 @@ interface PendingStep {
   worktreePath?: string;
   /** Run config opt-out: skip session deletion on settle. */
   keepSessions: boolean;
-  /** 1-based attempt counter and the attempt budget (1 + stepRetries). */
+  /** 1-based attempt counter plus whether this session may request a transient retry. */
   attempt: number;
-  maxAttempts: number;
+  allowTransientRetry: boolean;
+  output?: OutputContract;
   resolve: (output: string) => void;
   reject: (err: Error) => void;
 }
@@ -125,7 +128,30 @@ const TRANSIENT_ERROR =
 // Internal marker: the step's session died with a transient provider error
 // and invokeStep may retry it as a fresh session. Never written to the store.
 class TransientStepError extends Error {}
+class StructuredOutputError extends Error {}
 class BudgetExceededError extends Error {}
+
+function validateStepOutput(
+  stepID: string,
+  output: string,
+  contract: OutputContract | undefined
+): void {
+  if (!contract) return;
+  try {
+    parseStructuredOutput(output, contract.schema);
+  } catch (err) {
+    throw new StructuredOutputError(
+      `step "${stepID}" structured output invalid: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
+}
+
+function structuredPrompt(prompt: string, contract: OutputContract | undefined): string {
+  if (!contract) return prompt;
+  return `${prompt}\n\n## Required structured output\nReturn ONLY one JSON value matching this JSON Schema. Do not use Markdown fences or add prose.\n${JSON.stringify(contract.schema)}`;
+}
 
 // Routing: first route key (insertion order) that appears as a standalone
 // word in the classifier output wins, case-insensitive.
@@ -563,10 +589,15 @@ export class Runner {
       if (assistant === undefined) {
         throw new Error(`step "${entry.stepID}" produced no assistant message`);
       }
+      validateStepOutput(entry.stepID, assistant.output, entry.output);
       await this.settleStepSuccess(entry, assistant.output, assistant.usage);
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
-      await this.settleStepFailure(entry, e);
+      if (e instanceof StructuredOutputError) {
+        entry.reject(e);
+      } else {
+        await this.settleStepFailure(entry, e);
+      }
     } finally {
       // Output was already extracted above — the ephemeral session can go.
       this.deleteSession(sessionID, entry.directory, entry.keepSessions);
@@ -578,7 +609,7 @@ export class Runner {
     if (!entry) return;
     this.pending.delete(sessionID);
     this.clearStepTimers(entry);
-    if (TRANSIENT_ERROR.test(message) && entry.attempt < entry.maxAttempts) {
+    if (TRANSIENT_ERROR.test(message) && entry.allowTransientRetry) {
       // Transient provider blip with retries left: tear down the errored
       // session (respecting keepSessions) and let invokeStep re-run the
       // step as a fresh session. The step record stays `running`.
@@ -635,6 +666,9 @@ export class Runner {
           break;
         case "parallel":
           output = await this.runParallel(runID, def, config);
+          break;
+        case "map":
+          output = await this.runMap(runID, def, config);
           break;
         case "orchestrator":
           output = await this.runOrchestrator(runID, def, config);
@@ -763,6 +797,52 @@ export class Runner {
     return this.invokeStep(runID, def.aggregate, def.aggregate.id, prompt, config);
   }
 
+  private async runMap(
+    runID: string,
+    def: WorkflowDef,
+    config: RunConfig
+  ): Promise<string> {
+    const input = this.runInput(runID);
+    const items = def.items ?? [];
+    if (items.length > config.maxAgents) {
+      throw new Error(`map workflow has ${items.length} items; maxAgents is ${config.maxAgents}`);
+    }
+    const worker = def.steps[0];
+    const isolated = config.isolation === "worktree";
+    await mapLimit(items, config.concurrency, async (item, index) => {
+      const stepID = `${worker.id}-${index + 1}`;
+      await this.invokeStep(
+        runID,
+        worker,
+        stepID,
+        renderTemplate(worker.instructions ?? "", { input, item, index }),
+        config,
+        undefined,
+        { isolated }
+      );
+    });
+
+    if (!def.aggregate) throw new Error("map workflow has no aggregate step");
+    const outputs = this.cappedStepOutputs(runID, config);
+    const results = items
+      .map((item, index) => {
+        const id = `${worker.id}-${index + 1}`;
+        const renderedItem = this.cap(
+          typeof item === "string" ? item : JSON.stringify(item),
+          config,
+          runID
+        );
+        return `\n\n## Result of ${id} for item ${renderedItem}\n${outputs[id]?.output ?? ""}`;
+      })
+      .join("");
+    const aggregatePrompt = renderTemplate(def.aggregate.instructions ?? "", {
+      input,
+      steps: outputs,
+    });
+    const prompt = def.aggregate.command ? aggregatePrompt : aggregatePrompt + results;
+    return this.invokeStep(runID, def.aggregate, def.aggregate.id, prompt, config);
+  }
+
   private async runOrchestrator(
     runID: string,
     def: WorkflowDef,
@@ -818,8 +898,11 @@ export class Runner {
         return `\n\n## Result of ${id}\n${outputs[id]?.output ?? ""}`;
       })
       .join("");
-    const prompt =
-      renderTemplate(def.aggregate.instructions ?? "", { input, steps: outputs }) + results;
+    const aggregatePrompt = renderTemplate(def.aggregate.instructions ?? "", {
+      input,
+      steps: outputs,
+    });
+    const prompt = def.aggregate.command ? aggregatePrompt : aggregatePrompt + results;
     return this.invokeStep(runID, def.aggregate, def.aggregate.id, prompt, config);
   }
 
@@ -918,7 +1001,7 @@ export class Runner {
     }
     this.assertWithinBudget(runID, config);
 
-    // Worktree isolation (parallel/orchestrator fan-out steps only). Any
+    // Worktree isolation (parallel/map/orchestrator fan-out steps only). Any
     // failure of `git worktree add` (not a repo, no commits) falls back to
     // running in the main directory — never fails the run.
     let directory = this.deps.directory;
@@ -940,7 +1023,7 @@ export class Runner {
       return this.invokeCommandStep(
         runID,
         stepID,
-        stepDef.command,
+        stepDef,
         directory,
         wtPath,
         isolationFallback,
@@ -949,11 +1032,14 @@ export class Runner {
       );
     }
 
-    // LLM step: bounded retries for transient provider errors (session.error
-    // matching TRANSIENT_ERROR). Each attempt is a fresh session with the
-    // same instructions/model/agent; the step record stays `running`.
-    const maxAttempts = 1 + config.stepRetries;
-    for (let attempt = 1; ; attempt++) {
+    // LLM step: transient provider and structured-output failures each have
+    // independent bounded retry budgets. Every retry gets a fresh session.
+    let attempt = 0;
+    let transientRetries = 0;
+    let structuredRetries = 0;
+    const maxStructuredRetries = stepDef.output?.retryCount ?? 0;
+    for (;;) {
+      attempt++;
       try {
         return await this.invokeSessionAttempt(
           runID,
@@ -966,10 +1052,27 @@ export class Runner {
           wtPath,
           isolationFallback,
           attempt,
-          maxAttempts
+          transientRetries < config.stepRetries
         );
       } catch (err) {
-        if (!(err instanceof TransientStepError) || attempt >= maxAttempts) throw err;
+        if (err instanceof StructuredOutputError) {
+          const runNow = this.deps.store.getRun(runID);
+          if (this.destroyed || !runNow || !["running", "paused"].includes(runNow.status)) {
+            if (wtPath) await removeWorktree(this.deps.directory, wtPath);
+            throw err;
+          }
+          if (structuredRetries >= maxStructuredRetries) {
+            if (wtPath) await removeWorktree(this.deps.directory, wtPath);
+            this.failStep(runID, stepID, err.message);
+            throw err;
+          }
+          structuredRetries++;
+          continue;
+        }
+        if (!(err instanceof TransientStepError) || transientRetries >= config.stepRetries) {
+          throw err;
+        }
+        transientRetries++;
         // Cancelled / shut down while the previous attempt died: no retry.
         const runNow = this.deps.store.getRun(runID);
         if (this.destroyed || !runNow || !["running", "paused"].includes(runNow.status)) throw err;
@@ -1003,7 +1106,7 @@ export class Runner {
     wtPath: string | undefined,
     isolationFallback: boolean,
     attempt: number,
-    maxAttempts: number
+    allowTransientRetry: boolean
   ): Promise<string> {
     await this.waitUntilRunnable(runID);
     const run = this.deps.store.getRun(runID);
@@ -1067,7 +1170,8 @@ export class Runner {
         worktreePath: wtPath,
         keepSessions: config.keepSessions,
         attempt,
-        maxAttempts,
+        allowTransientRetry,
+        output: stepDef.output,
         resolve,
         reject,
       });
@@ -1104,7 +1208,7 @@ export class Runner {
       await this.deps.client.session.promptAsync({
         path: { id: sessionID },
         body: {
-          parts: [{ type: "text", text: steeredPrompt }],
+          parts: [{ type: "text", text: structuredPrompt(steeredPrompt, stepDef.output) }],
           agent: stepDef.agent ?? "build",
           ...(model ? { model } : {}),
         },
@@ -1132,7 +1236,7 @@ export class Runner {
   private async invokeCommandStep(
     runID: string,
     stepID: string,
-    command: string,
+    stepDef: StepDef,
     directory: string,
     wtPath: string | undefined,
     isolationFallback: boolean,
@@ -1152,7 +1256,7 @@ export class Runner {
 
     // Tracked so cancel()/destroy() can kill the process group mid-run.
     const key = `${runID}/${stepID}`;
-    const shell = runShell(command, directory, config.stepTimeoutMs);
+    const shell = runShell(stepDef.command!, directory, config.stepTimeoutMs);
     this.commands.set(key, { runID, stepID, kill: shell.kill });
     const res = await shell.done.finally(() => {
       // Only clear our own entry — cancel() may have removed it already.
@@ -1164,6 +1268,15 @@ export class Runner {
       const msg = `command exited ${res.code}${tail ? `: ${tail}` : ""}`;
       this.failStep(runID, stepID, msg);
       throw new Error(`step "${stepID}" ${msg}`);
+    }
+
+    try {
+      validateStepOutput(stepID, res.output, stepDef.output);
+    } catch (err) {
+      if (wtPath) await removeWorktree(this.deps.directory, wtPath);
+      const e = err instanceof Error ? err : new Error(String(err));
+      this.failStep(runID, stepID, e.message);
+      throw e;
     }
 
     let extra: Partial<StepState> = {};
@@ -1224,10 +1337,15 @@ export class Runner {
       if (assistant === undefined) {
         throw new Error(`step "${entry.stepID}" produced no assistant message`);
       }
+      validateStepOutput(entry.stepID, assistant.output, entry.output);
       await this.settleStepSuccess(entry, assistant.output, assistant.usage);
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
-      await this.settleStepFailure(entry, e);
+      if (e instanceof StructuredOutputError) {
+        entry.reject(e);
+      } else {
+        await this.settleStepFailure(entry, e);
+      }
     } finally {
       this.deleteSession(sessionID, entry.directory, entry.keepSessions);
     }

@@ -144,7 +144,7 @@ async function doInit(
       };
       config.command["workflow-author"] ??= {
         template:
-          "Design a reusable version 1 workflow IR for this task, using only the documented chain, routing, parallel, orchestrator, or evaluator patterns. Use provider-neutral {providerID,modelID} references when a model is requested. Call orch_workflows action=validate, correct every validation error, then call action=save. Do not include shell or gate commands unless the user explicitly requested them. Task: $ARGUMENTS",
+          "Design a reusable workflow IR for this task. Use version 1 for chain, routing, parallel, orchestrator, or evaluator definitions that need no structured outputs; use version 2 only for a literal-item map or per-step JSON Schema output contracts. Map must use a static items array, one worker template, and an aggregate. Use provider-neutral {providerID,modelID} references when a model is requested. Call orch_workflows action=validate, correct every validation error, then call action=save. Do not include shell or gate commands unless the user explicitly requested them. Task: $ARGUMENTS",
         description: "Author, validate, and save a safe workflow",
       };
       config.command["workflow-run"] ??= {

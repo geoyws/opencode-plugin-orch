@@ -104,11 +104,23 @@ Local plugin development supports atomic hot reload of both server and TUI code.
 A failed build leaves the last working generation active, and reload does not
 leak timers, listeners, or stale scoped UI registrations.
 
+### BR-10: Deterministic data workflows
+
+Users can fan a validated workflow out over literal JSON data without paying
+for or trusting a planner step. The aggregate receives results in source-item
+order even when workers finish out of order. Critical step outputs can declare
+small local JSON Schema contracts; invalid model output is retried only within
+an explicit bound, while command steps are never repeated for validation.
+Existing v1 workflow definitions and persisted plans remain executable.
+
 ## Success measures
 
 - A goal can reach a test-backed terminal verdict without manual continuation.
 - Dynamic runs complete with bounded concurrency and no unvalidated code
   execution.
+- Static map runs preserve source order, enforce agent caps, and recover
+  without replaying completed items.
+- Structured-output runs never complete a contracted step with invalid JSON.
 - DeepSeek passes the opt-in live goal and workflow scenarios.
 - Prompt-bound step output is measurably smaller than stored raw output.
 - Recovery tests prove completed work is reused and interrupted work is

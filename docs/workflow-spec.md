@@ -1,4 +1,8 @@
-# orch 0.2.0 — Workflow Engine Spec
+# Orch workflow engine spec
+
+This document retains the original 0.2 engine design and incorporates the
+current v0.7 IR contract. ADR-019 is authoritative for the v2 compatibility
+decision.
 
  orch stops being a "team of persistent members" plugin and becomes a **workflow
 engine for opencode**, implementing the workflow patterns from Anthropic's
@@ -9,9 +13,9 @@ as a set of ephemeral opencode sessions (one per step invocation).
 
 ## Target dependency versions
 
-- `@opencode-ai/plugin` ^1.18.7
-- `@opencode-ai/sdk` ^1.18.7
-- `zod` ^4.1.8 (unchanged)
+- `@opencode-ai/plugin` ^1.18.18
+- `@opencode-ai/sdk` ^1.18.18
+- `zod` ^4.3.6
 
 Confirmed against the 1.18.7 type definitions: `PluginInput` (`client`,
 `project`, `directory`, `worktree`, `serverUrl`, `$`), hook names `event`,
@@ -33,19 +37,28 @@ type ModelRef = { providerID: string; modelID: string };
 
 type StepDef = {
   id: string;                    // unique within the workflow
-  instructions: string;          // prompt template, see placeholders below
+  instructions?: string;         // prompt template, see placeholders below
+  command?: string;              // shell step; command wins if both are set
   agent?: string;                // opencode agent, default "build"
   model?: ModelRef;
+  output?: {                     // IR v2 only
+    schema: Record<string, unknown>;
+    retryCount: 0 | 1 | 2 | 3;   // default 1 for model steps
+  };
 };
 
 type WorkflowDef = {
+  version: 1 | 2;                // omitted definitions normalize to v1
   name: string;                  // unique, kebab-case
   description: string;
-  pattern: "chain" | "routing" | "parallel" | "orchestrator" | "evaluator";
+  pattern: "chain" | "routing" | "parallel" | "map" | "orchestrator" | "evaluator";
   steps: StepDef[];
+  items?: unknown[];                   // map only: non-empty literal JSON
   routes?: Record<string, string[]>;  // routing only: label -> step ids
-  aggregate?: StepDef;                // parallel/orchestrator: synthesis step
+  aggregate?: StepDef;                // parallel/map/orchestrator synthesis
   maxIterations?: number;             // evaluator only, default 3
+  isolation?: "worktree";             // fan-out worker isolation
+  gate?: { command: string };          // evaluator programmatic gate
 };
 ```
 
@@ -55,6 +68,8 @@ Prompt template placeholders (rendered before sending to a step session):
 - `{{output}}` — previous step's output (chain, evaluator loops)
 - `{{steps.<id>.output}}` — output of any completed step (aggregate steps)
 - `{{feedback}}` — evaluator's critique fed back to the generator
+- `{{item}}` — current map item; strings render directly, other values as JSON
+- `{{index}}` — zero-based map item index
 
 ### Pattern semantics (runner)
 
@@ -67,6 +82,12 @@ Prompt template placeholders (rendered before sending to a step session):
 - **parallel**: all `steps` run concurrently (bounded by `concurrency`,
   default 4). When all complete, `aggregate` (required) runs with access to
   every `{{steps.<id>.output}}`. Run output = aggregate output.
+- **map** (IR v2): the sole model-worker template runs once per literal `items`
+  entry, bounded by `concurrency` and `maxAgents`. Dynamic ids are
+  `<template-id>-1..N`. Aggregate input appends results in source-item order,
+  independent of completion order. No planner model is invoked. Command
+  workers are rejected because interpolating item data into `/bin/sh -c`
+  would create a shell-injection boundary.
 - **orchestrator**: `steps[0]` is the planner. It must output a JSON array of
   `{ "instructions": string }` objects (runner extracts the first JSON array
   in the output; parse failure = run failure). Each subtask runs as a worker
@@ -74,8 +95,8 @@ Prompt template placeholders (rendered before sending to a step session):
   with `{{steps.<id>.output}}` where worker step ids are `worker-1..N`.
 - **evaluator**: `steps[0]` = generator, `steps[1]` = evaluator, loop:
   generator produces (`{{feedback}}` on iterations > 1), evaluator reviews.
-  If evaluator output contains the token `PASS` (standalone word,
-  case-insensitive) the run completes with the generator's last output;
+  If evaluator output is `PASS` only (apart from the supported timestamp
+  footer), the run completes with the generator's last output;
   otherwise feedback loops back, up to `maxIterations` (default 3), after
   which the run completes with the last generator output and a note that the
   iteration budget was exhausted.
@@ -97,15 +118,25 @@ Each step invocation = one ephemeral opencode session:
    10 min, unref'd timer), the step fails → run fails (parallel: a failed
    branch fails the run).
 
+For an IR v2 `output` contract, the prompt requires one JSON value and the
+completed text is JSON-parsed and locally validated before `step_completed`.
+Invalid model output retries in a fresh session at most `retryCount` times;
+this budget is independent of transient-provider retries. Command output is
+validated once and command contracts must set `retryCount: 0`. Schemas are
+limited to 32,768 encoded characters, reject `$ref` recursively, and never
+perform remote resolution. The current v1 plugin client has no portable
+provider-side `format` field, so local validation is authoritative.
+
 Run/step state is event-sourced through the existing `Store` (keep the
 JSONL + snapshot + replay design, new event types only):
 
 `run_created`, `step_started`, `step_completed`, `step_failed`,
 `run_completed`, `run_failed`, `run_cancelled`.
 
-On plugin init, replay marks any run left in `running` as `failed`
-(reason: "plugin restarted") — no cross-restart session revalidation;
-runs are not resumed across restarts in 0.2.0.
+On plugin init, replay recovers any run left in `running` as `paused`, aborts
+and deletes orphaned step sessions best-effort, and retains the immutable
+resolved plan. Resume reuses completed step ids and re-drives only unfinished
+work. This applies to map's deterministic dynamic ids as well as v1 patterns.
 
 ### Tools (7)
 
@@ -168,18 +199,20 @@ orchestrator-workers, evaluator-optimizer)", remove `bin`, remove
 - `store.test.ts` — event append, snapshot, replay; running→failed on reload.
 - `workflows.test.ts` — zod validation (bad defs rejected), custom loader,
   placeholder rendering.
-- `runner.test.ts` — each of the 5 patterns end-to-end against a **fake
+- `runner.test.ts` — each of the 6 patterns end-to-end against a **fake
   client** (records `session.create`/`promptAsync`, lets the test fire
   `session.idle`/`session.error` with canned assistant messages): ordering
   for chain, label matching for routing, concurrency + aggregate for
-  parallel, planner JSON parsing + workers for orchestrator, PASS loop and
-  maxIterations exhaustion for evaluator, cancel aborts sessions, step
-  timeout fails the run.
-- `tools.test.ts` — all 7 tools with the same fake-client harness.
-- `plugin.test.ts` — init wires hooks, returns 7 tools, init failure returns
+  parallel/map, planner JSON parsing + workers for orchestrator, PASS loop and
+  maxIterations exhaustion for evaluator, schema retry/exhaustion, cancel,
+  and timeout behavior.
+- `structured-output.test.ts` — local parsing/validation, bounds, and `$ref`
+  refusal.
+- `tools.test.ts` — all 9 tools with the same fake-client harness.
+- `plugin.test.ts` — init wires hooks, returns 9 tools, init failure returns
   `{}` without throwing.
 
 Old test files are all deleted. `tests/_harness.ts` may be rewritten as the
 fake-client harness.
 
-Startup toast: `[orch] ready · 7 tools`.
+Startup toast: `[orch] ready · 9 tools`.

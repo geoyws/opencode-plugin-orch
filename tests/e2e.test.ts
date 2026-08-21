@@ -95,7 +95,7 @@ interface MockScript {
   leadTool?: { name: string; args: Record<string, unknown> };
   /** When the orch_run tool result comes back, call orch_cancel with the run id. */
   cancelOnRunStart?: boolean;
-  steps: Array<{ marker: string; reply: string }>;
+  steps: Array<{ marker: string; reply: string | string[] }>;
   goalVerdicts?: Array<{ verdict: "met" | "not_met" | "impossible"; reason: string }>;
   goalReplies?: string[];
 }
@@ -117,6 +117,7 @@ let cancelIssued = false;
 let mockCallCounter = 0;
 let goalVerdictCounter = 0;
 let goalReplyCounter = 0;
+const stepReplyCounters = new Map<string, number>();
 
 function contentText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -239,7 +240,13 @@ function planCompletion(
   if (mockScript?.leadTool) {
     for (const route of mockScript.steps) {
       if (text.includes(route.marker)) {
-        return { chunks: textChunks(route.reply), answered: "text" };
+        const replies = Array.isArray(route.reply) ? route.reply : [route.reply];
+        const index = stepReplyCounters.get(route.marker) ?? 0;
+        stepReplyCounters.set(route.marker, index + 1);
+        return {
+          chunks: textChunks(replies[Math.min(index, replies.length - 1)]),
+          answered: "text",
+        };
       }
     }
   }
@@ -300,17 +307,9 @@ function startMockLlm() {
       return new Response("not found", { status: 404 });
     },
   };
-  let last: unknown;
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const port = 20_000 + Math.floor(Math.random() * 30_000);
-    try {
-      return Bun.serve({ hostname: "127.0.0.1", port, ...handler });
-    } catch (err) {
-      last = err;
-      if ((err as { code?: string }).code !== "EADDRINUSE") throw err;
-    }
-  }
-  throw last instanceof Error ? last : new Error("failed to allocate mock LLM port");
+  // Port 0 asks the OS for an available ephemeral port and avoids a random
+  // probe/listen race when several local OpenCode suites run concurrently.
+  return Bun.serve({ hostname: "127.0.0.1", port: 0, ...handler });
 }
 
 // ── Store reading (the plugin's runs.jsonl is the source of truth) ──────
@@ -480,6 +479,7 @@ async function driveLead(
   cancelIssued = false;
   goalVerdictCounter = 0;
   goalReplyCounter = 0;
+  stepReplyCounters.clear();
 
   const sess = await client.session.create({
     query: { directory: project },
@@ -528,6 +528,7 @@ async function driveGoal(client: OpencodeClient, project: string): Promise<strin
   mockCalls.length = 0;
   goalVerdictCounter = 0;
   goalReplyCounter = 0;
+  stepReplyCounters.clear();
   const created = await client.session.create({
     query: { directory: project },
     body: { title: "e2e-goal-lead" },
@@ -835,6 +836,80 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
       // And the input reached step 1.
       expect(mockCalls.find((c) => c.text.includes("E2E-STEP-CHAIN-ONE"))!.text).toContain(
         "E2E-CHAIN-INPUT"
+      );
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  test(
+    "t2: IR v2 static map preserves order and retries invalid structured output",
+    async () => {
+      const objectSchema = {
+        type: "object",
+        properties: { result: { type: "string" } },
+        required: ["result"],
+        additionalProperties: false,
+      };
+      const project = makeProject("map-structured", {
+        "e2e-map-structured.json": {
+          version: 2,
+          name: "e2e-map-structured",
+          description: "real-server map and schema retry",
+          pattern: "map",
+          items: ["alpha", "beta"],
+          steps: [
+            {
+              id: "worker",
+              instructions:
+                "E2E-STEP-MAP-WORKER. item={{item}} index={{index}} input={{input}}",
+              output: { schema: objectSchema, retryCount: 1 },
+            },
+          ],
+          aggregate: {
+            id: "aggregate",
+            instructions: "E2E-STEP-MAP-AGGREGATE. Combine in source order.",
+            output: { schema: { ...objectSchema, properties: { summary: { type: "string" } }, required: ["summary"] }, retryCount: 1 },
+          },
+        },
+      });
+      await driveLead(
+        client,
+        project,
+        {
+          leadTool: {
+            name: "orch_run",
+            args: { workflow: "e2e-map-structured", input: "E2E-MAP-INPUT" },
+          },
+          steps: [
+            {
+              marker: "E2E-STEP-MAP-WORKER. item=alpha index=0",
+              reply: '{"result":"ALPHA"}',
+            },
+            {
+              marker: "E2E-STEP-MAP-WORKER. item=beta index=1",
+              reply: '{"result":"BETA"}',
+            },
+            {
+              marker: "E2E-STEP-MAP-AGGREGATE",
+              reply: ["not-json", '{"summary":"MAP-FINAL"}'],
+            },
+          ],
+        },
+        "Start the e2e-map-structured workflow."
+      );
+
+      const run = await waitForTerminalRun(project);
+      expect(run.status, run.error).toBe("completed");
+      expect(run.output).toBe('{"summary":"MAP-FINAL"}');
+      expect(run.steps.get("worker-1")?.output).toBe('{"result":"ALPHA"}');
+      expect(run.steps.get("worker-2")?.output).toBe('{"result":"BETA"}');
+      const aggregateCalls = mockCalls.filter((c) =>
+        c.text.includes("E2E-STEP-MAP-AGGREGATE")
+      );
+      expect(aggregateCalls).toHaveLength(2);
+      expect(aggregateCalls[0].text).toContain("Return ONLY one JSON value");
+      expect(aggregateCalls[0].text.indexOf("ALPHA")).toBeLessThan(
+        aggregateCalls[0].text.indexOf("BETA")
       );
     },
     TEST_TIMEOUT_MS

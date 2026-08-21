@@ -253,7 +253,7 @@ Orch is deliberately not a DeepSeek Harness integration. It accepts any
 provider/model reference already exposed by OpenCode; a separate plugin owns
 any DeepSeek Harness runtime or protocol integration.
 
-Use `/workflow-author <task>` to have the current model—including DeepSeek—produce strict version 1 IR, validate it, and save it under `.opencode/workflows/`. `/workflow-run <name> <input>` starts it, while `/workflows` shows definitions and runs. Saved workflow names are also registered as slash commands.
+Use `/workflow-author <task>` to have the current model—including DeepSeek—produce validated IR, validate it, and save it under `.opencode/workflows/`. It keeps ordinary workflows on version 1 and selects version 2 only for static maps or structured-output contracts. `/workflow-run <name> <input>` starts it, while `/workflows` shows definitions and runs. Saved workflow names are also registered as slash commands.
 
 Or talk to your model in natural language—the 9 `orch_*` tools are in its toolbelt. One example per built-in workflow:
 
@@ -313,9 +313,9 @@ A gate-only evaluator: the `generator` writes or fixes tests AND the code under 
 |---|---|---|---|
 | `model` | `{ "providerID": "...", "modelID": "..." }` | server default | model for every step (lowest precedence — see `stepModels`) |
 | `maxIterations` | integer ≥ 1 | workflow def's `maxIterations`, else 3 | evaluator loop budget |
-| `concurrency` | integer ≥ 1 | 4 | max concurrent fan-out steps (parallel/orchestrator) |
+| `concurrency` | integer ≥ 1 | 4 | max concurrent fan-out steps (parallel/map/orchestrator) |
 | `stepTimeoutMs` | integer ≥ 1 | 600000 (10 min) | per-step timeout; also the timeout for shell steps and gate commands |
-| `isolation` | `"worktree"` | unset | run parallel/orchestrator fan-out steps in per-step git worktrees — see [Worktree isolation](#worktree-isolation) |
+| `isolation` | `"worktree"` | unset | run parallel/map/orchestrator fan-out steps in per-step git worktrees — see [Worktree isolation](#worktree-isolation) |
 | `gateCommand` | string | workflow def's `gate.command` | override the evaluator gate command at run time (e.g. point `test-fix-loop` at `bun test`) |
 | `stepModels` | `{ "<step-id>": { "providerID": "...", "modelID": "..." } }` | unset | per-step model override (highest precedence) — see [choosing models](#choosing-models) |
 | `maxStepOutputChars` | integer ≥ 1000 | 50000 | cap on step-output text injected into later prompts; full outputs stay in the store |
@@ -324,7 +324,7 @@ A gate-only evaluator: the `generator` writes or fixes tests AND the code under 
 | `maxTokens` | positive integer | unset | hard provider-reported token budget; prevents the next unfinished step after the limit is reached |
 | `softTokens` | positive integer | 75% of `maxTokens` | switch downstream prompt assembly to persisted compact checkpoints |
 | `maxCost` | positive number | unset | hard provider-reported cost budget; unknown provider costs are never treated as zero |
-| `maxAgents` | positive integer | 20 | maximum parallel workers or planner-emitted subtasks |
+| `maxAgents` | positive integer | 20 | maximum parallel/map workers or planner-emitted subtasks |
 | `maxDurationMs` | positive integer | unset | wall-clock run budget checked before each unfinished step |
 | `permissionMode` | `"ask"` or `"auto"` | custom: `ask`; built-in: `auto` | custom/model-authored workflows require normal prompts unless autonomous mode is explicitly selected |
 
@@ -345,16 +345,46 @@ Drop your own definitions into `.opencode/workflows/*.json` in your project — 
 }
 ```
 
+IR v2 static map with a contracted worker result:
+
+```json
+{
+  "version": 2,
+  "name": "classify-records",
+  "description": "Classify a fixed batch and summarize it.",
+  "pattern": "map",
+  "items": ["alpha", { "id": 2, "name": "beta" }],
+  "steps": [{
+    "id": "classify",
+    "instructions": "Classify item {{index}}: {{item}}",
+    "output": {
+      "schema": {
+        "type": "object",
+        "properties": { "label": { "type": "string" } },
+        "required": ["label"],
+        "additionalProperties": false
+      },
+      "retryCount": 1
+    }
+  }],
+  "aggregate": {
+    "id": "aggregate",
+    "instructions": "Summarize every result in source-item order."
+  }
+}
+```
+
 Schema:
 
-- `version` — currently `1` (legacy definitions without it are normalized to version 1)
+- `version` — `1` or `2`; legacy definitions without it are normalized to version 1. Version 2 is required only for `map`, `items`, or step `output` contracts
 - `name` — unique, kebab-case
-- `pattern` — `chain` | `routing` | `parallel` | `orchestrator` | `evaluator`
-- `steps[]` — `{ id, instructions?, command?, agent?, model? }` (`agent` defaults to `build`; `model` is `{ "providerID": "...", "modelID": "..." }`). Every step needs `instructions` (an LLM step) or `command` (a shell step — see [Shell steps and gates](#shell-steps-and-gates)); if both are set, `command` wins
+- `pattern` — `chain` | `routing` | `parallel` | `map` | `orchestrator` | `evaluator`
+- `steps[]` — `{ id, instructions?, command?, agent?, model?, output? }` (`agent` defaults to `build`; `model` is `{ "providerID": "...", "modelID": "..." }`). Every step needs `instructions` (an LLM step) or `command` (a shell step — see [Shell steps and gates](#shell-steps-and-gates)); if both are set, `command` wins. In v2, `output` is `{ "schema": <JSON Schema>, "retryCount": 0..3 }`
+- `items` — map only: a non-empty literal JSON array. `steps` must contain exactly one reusable model-worker template using `instructions`; item interpolation into shell commands is intentionally unsupported
 - `routes` — routing only: label → step ids. `steps[0]` is the classifier; the first route key appearing as a standalone word in its output wins
-- `aggregate` — required for parallel/orchestrator: the synthesis step
+- `aggregate` — required for parallel/map/orchestrator: the synthesis step
 - `maxIterations` — evaluator only, default 3
-- `isolation` — `"worktree"`: run parallel/orchestrator fan-out steps in per-step git worktrees — see [Worktree isolation](#worktree-isolation)
+- `isolation` — `"worktree"`: run parallel/map/orchestrator fan-out steps in per-step git worktrees — see [Worktree isolation](#worktree-isolation)
 - `gate` — evaluator only: `{ "command": "..." }`, a shell command run in the project dir after each generator iteration; exit 0 passes. Evaluator workflows need a critic step (`steps[1]`) or a `gate` — or both
 
 Prompt-template placeholders, rendered before each step session is prompted:
@@ -363,14 +393,18 @@ Prompt-template placeholders, rendered before each step session is prompted:
 - `{{output}}` — previous step's output (chain, evaluator loops)
 - `{{steps.<id>.output}}` — output of any completed step (aggregate steps)
 - `{{feedback}}` — the critic's last critique, fed back to the generator (evaluator)
+- `{{item}}` — current literal map item; strings render directly and other values render as compact JSON
+- `{{index}}` — zero-based map item index
 
-One orchestrator caveat: worker step ids are dynamic (`worker-1..N`), so they can't be named in a static aggregate template. The runner appends each worker's bounded output to the aggregate prompt as a `## Result of worker-N` section instead.
+Orchestrator and map worker ids are dynamic (`worker-1..N` and `<template-id>-1..N`), so they cannot be named in a static aggregate template. The runner appends each bounded result to the aggregate prompt in source order.
+
+Structured-output schemas are locally authoritative: Orch asks the model for JSON-only output, parses it, and validates it before completing the step. Invalid model output gets at most `retryCount` fresh-session retries. Command output is validated once and therefore requires `retryCount: 0`. Schemas are limited to 32 KiB, reject `$ref`, and never fetch remote resources. Provider-side schema enforcement can be added only after OpenCode exposes a portable server-plugin API for it.
 
 `orch_workflows action=save` performs an atomic write and refuses symlinked workflow directories/files. Model-authored shell steps and gates are rejected unless the caller explicitly sets `allowShell: true`; generated JavaScript is never evaluated.
 
 ## Worktree isolation
 
-Set `isolation: "worktree"` on a workflow definition or in the run config (`{"isolation": "worktree"}` — run config wins) and the fan-out steps of `parallel` and `orchestrator` runs each execute in their own git worktree instead of sharing the project directory. Chain, routing, and evaluator steps always run in the main directory.
+Set `isolation: "worktree"` on a workflow definition or in the run config (`{"isolation": "worktree"}` — run config wins) and the fan-out steps of `parallel`, `map`, and `orchestrator` runs each execute in their own git worktree instead of sharing the project directory. Chain, routing, and evaluator steps always run in the main directory.
 
 - Each step gets `git worktree add --detach <path> HEAD` at `<project-parent>/.orch-worktrees/<project-basename>/<run-id>/<step-id>` — a sibling directory of the project, so the repo stays clean and no `.gitignore` edits are needed.
 - Requires the project to be a git repo with at least one commit. If worktree creation fails for any reason, the step runs in the main directory instead and records `isolationFallback: true` in its step metadata — isolation problems never fail the run.
@@ -450,7 +484,8 @@ The test suite is at `tests/`, driven by `bun test` with a fake opencode client 
 
 - `store.test.ts` — event append, snapshot, replay, and running → paused recovery
 - `workflows.test.ts` — Zod validation (bad defs rejected), custom loader, placeholder rendering
-- `runner.test.ts` — all 5 patterns end-to-end against the fake client: chain ordering, routing label matching, parallel concurrency + aggregate, orchestrator planner JSON parsing + workers, evaluator PASS loop and budget exhaustion, gate pass/fail feedback, command steps, cancel, step timeout
+- `runner.test.ts` — all 6 patterns end-to-end against the fake client: chain ordering, routing label matching, parallel/map concurrency + aggregation, orchestrator planner JSON parsing + workers, evaluator PASS loop and budget exhaustion, schema retries, command validation, cancel, and timeouts
+- `structured-output.test.ts` — local JSON parsing, JSON Schema validation, size bounds, and remote-reference rejection
 - `worktree.test.ts` — porcelain parsing, the add/copy-back/remove lifecycle against real git repos in temp dirs, and worktree-isolated runs (poll fallback, conflicts, `isolationFallback`)
 - `permissions.test.ts` — the git-mutation matcher (mutating denied, read-only allowed) and the `permission.ask` hook policy (step sessions auto-allowed, non-step sessions untouched, `ORCH_STEP_PERMISSIONS=ask` escape hatch)
 - `goal.test.ts` — dedicated worker isolation, independent verdicts, steering,
@@ -464,7 +499,7 @@ The test suite is at `tests/`, driven by `bun test` with a fake opencode client 
 
 `tests/e2e.test.ts` runs against a **real in-process opencode server** (spawned via `createOpencode()`, plugin injected through config — no fake client). It has two tiers: **tier 1** boots the server and verifies plugin load (tool registration, init log, SSE endpoint); **tier 2** drives full workflow and `/goal` runs through the real stack against a mock LLM — a tiny in-process OpenAI-compatible chat-completions server scripted to make the lead session call Orch tools and to answer delegated prompts — asserting on the plugin's own store (`runs.jsonl`) and the mock's request log. The goal scenario forces the soft-token boundary, exercises OpenCode's actual compaction endpoint, and proves one post-compaction continuation. Both tiers are hermetic (redirected `HOME`, seeded opencode caches, dead external proxy; requires the `opencode` binary on PATH and a built `dist/`) and run as part of plain `bun test`; `pnpm run test:e2e` runs just this file.
 
-`tests/e2e-live.test.ts` is the **live tier** (`pnpm run test:e2e:live`, i.e. `ORCH_LIVE=1` — costs real tokens, manual pre-release runs only). Four real workflow runs use the configured model (override with `ORCH_LIVE_MODEL=providerID/modelID`), objective assertions (store state, `git diff`, gate exit codes), and an **LLM-as-judge** verdict on output quality: chain-draft-refine tagline quality, adversarial-review finding a planted off-by-one, test-fix-loop fixing a planted bug without touching the tests (gate `npm test`), and author-tests writing meaningful passing tests. A fifth live scenario runs the provider as goal worker, evaluator, and summarizer, forces the automatic soft-token compaction boundary, and asserts that the durable continuation reaches a later `met` verdict.
+`tests/e2e-live.test.ts` is the **live tier** (`pnpm run test:e2e:live`, i.e. `ORCH_LIVE=1` — costs real tokens, manual pre-release runs only). Four real workflow runs use the configured model (override with `ORCH_LIVE_MODEL=providerID/modelID`), objective assertions (store state, `git diff`, gate exit codes), and an **LLM-as-judge** verdict on output quality: chain-draft-refine tagline quality, adversarial-review finding a planted off-by-one, test-fix-loop fixing a planted bug without touching the tests (gate `npm test`), and author-tests writing meaningful passing tests. A fifth live scenario runs the provider as goal worker, evaluator, and summarizer, forces the automatic soft-token compaction boundary, and asserts that the durable continuation reaches a later `met` verdict. A sixth runs an IR v2 static map through a real provider and requires schema-valid worker and aggregate JSON in source-item order.
 
 ## Architecture
 
@@ -525,6 +560,7 @@ See [`docs/adr/`](docs/adr/) for architecture decision records:
 - [ADR-008](docs/adr/ADR-008-tracking-opencode-latest.md) — Track the latest opencode, experimental APIs included (fix-forward policy)
 - [ADR-009](docs/adr/ADR-009-session-scoped-goal-controller.md) — Session-scoped goal controller
 - [ADR-010](docs/adr/ADR-010-validated-workflow-ir.md) — Validated dynamic workflow IR
+- [ADR-019](docs/adr/ADR-019-ir-v2-static-map-and-structured-outputs.md) — IR v2 static map and structured outputs
 - [ADR-011](docs/adr/ADR-011-provider-neutral-deepseek-routing.md) — Provider-neutral DeepSeek routing
 - [ADR-012](docs/adr/ADR-012-separate-server-and-tui-entrypoints.md) — Separate server and TUI entrypoints
 - [ADR-013](docs/adr/ADR-013-token-budgets-and-compact-checkpoints.md) — Token budgets and compact checkpoints

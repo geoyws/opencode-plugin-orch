@@ -192,3 +192,20 @@ and exposes durable progress and controls after the initiating turn ends.
 Future native work is not part of this epic. It requires production-like
 profiling, a bounded hotspot, a new ADR, full behavioral parity, portable
 installation, and a measured win that clears ADR-015's release gate.
+
+## Follow-on epic: Deterministic data workflows (v0.7)
+
+**Status:** Complete
+
+- [x] Add backward-compatible workflow IR v2.
+- [x] Add literal-item static `map` fan-out without a planner model.
+- [x] Add `{{item}}` and `{{index}}` template bindings.
+- [x] Add bounded per-step JSON Schema contracts and local validation.
+- [x] Retry invalid model JSON only within an explicit schema retry budget.
+- [x] Validate command-step JSON once without rerunning commands.
+- [x] Preserve pause, resume, cancellation, recovery, isolation, token, cost,
+      duration, concurrency, and agent caps for the new pattern.
+- [x] Prove v1 compatibility, v2 validation, map ordering, schema failure and
+      retry behavior, real-OpenCode execution, and local hot deployment.
+- [x] Record the compatibility boundary in ADR-019 and update BRD, PRD,
+      workflow spec, README, and changelog.

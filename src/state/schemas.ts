@@ -12,6 +12,7 @@ export const Pattern = z.enum([
   "chain",
   "routing",
   "parallel",
+  "map",
   "orchestrator",
   "evaluator",
 ]);
@@ -37,7 +38,7 @@ export const RunConfig = z.object({
   maxIterations: z.number().int().min(1).default(3),
   concurrency: z.number().int().min(1).default(4),
   stepTimeoutMs: z.number().int().min(1).default(600_000),
-  // Run parallel/orchestrator fan-out steps in per-step git worktrees.
+  // Run parallel/map/orchestrator fan-out steps in per-step git worktrees.
   isolation: z.enum(["worktree"]).optional(),
   // Evaluator gate: shell command run in the project dir after each
   // generator iteration; exit 0 = pass.
@@ -75,7 +76,7 @@ export const StepState = z.object({
   error: z.string().optional(),
   startedAt: z.number().optional(),
   completedAt: z.number().optional(),
-  // Worktree isolation bookkeeping (parallel/orchestrator fan-out steps).
+  // Worktree isolation bookkeeping (parallel/map/orchestrator fan-out steps).
   copiedFiles: z.array(z.string()).optional(),
   conflicts: z.array(z.string()).optional(),
   // Symlinks found in the worktree at copy-back time — skipped, not copied
@@ -83,8 +84,8 @@ export const StepState = z.object({
   skippedSymlinks: z.array(z.string()).optional(),
   // Set when worktree creation failed and the step ran in the main directory.
   isolationFallback: z.boolean().optional(),
-  // LLM step attempt counter (present only once a transient-error retry
-  // re-started the step; rides the step_started event).
+  // LLM step attempt counter (present once a transient or structured-output
+  // retry re-starts the step; rides the step_started event).
   attempts: z.number().int().min(1).optional(),
   // Provider-reported usage. Missing means the provider/session did not
   // expose usage; it must never be interpreted as zero.

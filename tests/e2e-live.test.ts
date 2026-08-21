@@ -7,7 +7,7 @@
 // Manual pre-release runs only, mirroring ADR-001's live-testing practice:
 //     pnpm run test:e2e:live        (= ORCH_LIVE=1 bun test tests/e2e-live.test.ts)
 //
-// Five scenarios. The first four have an OBJECTIVE assertion (store / git /
+// Six scenarios. The first four have an OBJECTIVE assertion (store / git /
 // exit codes)
 // AND a JUDGE verdict (an LLM grades output quality against a rubric; the
 // judge's rationale is printed and embedded in the failure message):
@@ -21,6 +21,8 @@
 //      tests exist and pass; coverage is meaningful (judged)
 //   5. goal compaction     — real provider worker/evaluator/summarizer; forces
 //      automatic compaction and proves the persisted continuation runs
+//   6. IR v2 map           — literal-item fan-out + locally validated worker
+//      and aggregate JSON contracts through a real provider
 //
 // The judge is itself an LLM and can be wrong — rubrics are written to be
 // explicit and demanding. If a verdict fails on a genuinely good artifact,
@@ -589,5 +591,89 @@ describe.skipIf(SKIP)("e2e live: LLM-as-judge (ORCH_LIVE=1, costs real tokens)",
       expect(goal.workerSessionID).toBeDefined();
     },
     10 * 60_000
+  );
+
+  test(
+    "live 6: IR v2 static map returns schema-valid ordered data",
+    async () => {
+      const project = makeProject("map-structured");
+      const workerSchema = {
+        type: "object",
+        properties: { result: { type: "string", minLength: 1 } },
+        required: ["result"],
+        additionalProperties: false,
+      };
+      writeFile(
+        project,
+        ".opencode/workflows/live-map-structured.json",
+        JSON.stringify({
+          version: 2,
+          name: "live-map-structured",
+          description: "paid provider validation of IR v2 map and JSON contracts",
+          pattern: "map",
+          items: ["alpha", { slug: "beta", value: 2 }],
+          steps: [
+            {
+              id: "worker",
+              instructions:
+                "Transform the current item into a short stable label. For alpha, " +
+                "result must be ALPHA. For the beta object, result must be BETA-2. " +
+                "Item={{item}} index={{index}}.",
+              output: { schema: workerSchema, retryCount: 2 },
+            },
+          ],
+          aggregate: {
+            id: "aggregate",
+            instructions:
+              "Return a concise summary and an items array containing the two worker " +
+              "result labels in the exact source-item order.",
+            output: {
+              schema: {
+                type: "object",
+                properties: {
+                  summary: { type: "string", minLength: 1 },
+                  items: {
+                    type: "array",
+                    items: { type: "string" },
+                    minItems: 2,
+                    maxItems: 2,
+                  },
+                },
+                required: ["summary", "items"],
+                additionalProperties: false,
+              },
+              retryCount: 2,
+            },
+          },
+        })
+      );
+
+      await runLeadPrompt(
+        client,
+        project,
+        'Call the orch_run tool ONCE with workflow "live-map-structured" and input ' +
+          '"Normalize these records". After the tool returns, confirm the run id ' +
+          "in one short sentence and stop. Do not call any other tool."
+      );
+
+      await waitForRunCreated(project);
+      const run = await waitForTerminalRun(project, 6 * 60_000);
+      expect(run.status, run.error ?? "").toBe("completed");
+      expect(JSON.parse(run.steps.get("worker-1")?.output ?? "")).toEqual({
+        result: "ALPHA",
+      });
+      expect(JSON.parse(run.steps.get("worker-2")?.output ?? "")).toEqual({
+        result: "BETA-2",
+      });
+      const output = JSON.parse(run.output ?? "") as { summary: string; items: string[] };
+      expect(output.summary.length).toBeGreaterThan(0);
+      expect(output.items).toEqual(["ALPHA", "BETA-2"]);
+      expect([...run.steps.keys()]).toEqual([
+        "worker-1",
+        "worker-2",
+        "aggregate",
+      ]);
+    },
+    8 * 60_000
   );
 });

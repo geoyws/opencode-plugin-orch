@@ -6,6 +6,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### v0.7 deterministic data workflows
+
+- Added backwards-compatible workflow IR v2 while preserving v1 as the
+  default for existing definitions and immutable persisted plans.
+- Added deterministic static `map` fan-out over literal JSON `items`, with one
+  worker template, `{{item}}` / `{{index}}` bindings, bounded concurrency and
+  agent count, ordered aggregation, worktree isolation, and restart reuse.
+- Added per-step JSON Schema output contracts with JSON-only prompting, local
+  authoritative validation, independent bounded schema retries, and
+  single-execution command validation. Schemas are limited to 32 KiB, reject
+  `$ref`, and perform no network resolution.
+- Updated `/workflow-author`, README, BRD, PRD, workflow spec, epic, and
+  ADR-019. Added unit and real installed-OpenCode E2E coverage for map ordering,
+  schema retries/exhaustion, and v1 compatibility.
+- Verified 185 non-live tests, 13 hermetic real-OpenCode scenarios, two Rust
+  fixture tests, and all six paid IFCA DeepSeek live scenarios. The live IR v2
+  scenario returned schema-valid ordered map data; the forced-compaction goal
+  achieved in two turns after 57,009 observed tokens.
+
 ### v0.6 lead control plane and local hot reload
 
 - Moved goal implementation into a dedicated worker session. The initiating

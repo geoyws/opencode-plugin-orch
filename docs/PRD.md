@@ -2,7 +2,7 @@
 
 **Status:** v0.6 lead-control and local-reload hardening
 **Date:** 2026-08-16
-**Target release:** v0.6.0
+**Target release:** v0.7.0
 
 ## Product definition
 
@@ -199,6 +199,25 @@ observable through tools, slash commands, and an optional TUI.
   budgets, and restart recovery.
 - README describes limitations and differentiates hermetic E2E from live model
   receipts.
+
+## v0.7 deterministic data-workflow requirements
+
+- Workflow IR v2 remains backward compatible with every valid v1 definition
+  and persisted immutable plan.
+- A static `map` fans out over literal JSON items without invoking a planner;
+  output order follows item order and existing concurrency and agent limits
+  apply.
+- IR v2 steps may declare a bounded JSON Schema output contract. Model output
+  is JSON-parsed and locally validated before the step completes; invalid
+  output retries only within the declared schema retry budget.
+- Command steps with an output contract are validated exactly once and are not
+  rerun merely because their output is invalid.
+- Schemas are size-bounded, do not resolve `$ref`, never trigger network I/O,
+  and remain authoritative locally until OpenCode's server-plugin client
+  exposes a documented provider-side structured-output API.
+- Unit and real-OpenCode E2E coverage must prove v1 compatibility, map fan-out,
+  ordering, aggregation, structured-output retry/exhaustion, restart recovery,
+  and safe local deployment.
 
 ## v0.5 runtime and lifecycle requirements
 

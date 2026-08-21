@@ -140,6 +140,143 @@ describe("WorkflowDef zod validation", () => {
     expect(WorkflowDef.safeParse(def).success).toBe(true);
   });
 
+  it("accepts IR v2 map and structured-output contracts", () => {
+    const def = {
+      version: 2,
+      name: "map-records",
+      description: "map records",
+      pattern: "map",
+      items: ["alpha", { id: 2 }],
+      steps: [
+        {
+          id: "worker",
+          instructions: "process {{index}} {{item}}",
+          output: {
+            schema: {
+              type: "object",
+              properties: { result: { type: "string" } },
+              required: ["result"],
+              additionalProperties: false,
+            },
+            retryCount: 2,
+          },
+        },
+      ],
+      aggregate: { id: "aggregate", instructions: "combine" },
+    };
+    const result = WorkflowDef.safeParse(def);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.steps[0].output?.retryCount).toBe(2);
+  });
+
+  it("keeps IR v2-only capabilities out of v1 definitions", () => {
+    const structuredV1 = {
+      ...validChain,
+      version: 1,
+      steps: [
+        {
+          id: "a",
+          instructions: "x",
+          output: { schema: { type: "string" }, retryCount: 0 },
+        },
+      ],
+    };
+    const result = WorkflowDef.safeParse(structuredV1);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((i) => i.message).join(" ")).toContain(
+        "require workflow IR version 2"
+      );
+    }
+  });
+
+  it("requires map items, one worker template, and an aggregate", () => {
+    const base = {
+      version: 2,
+      name: "bad-map",
+      description: "bad map",
+      pattern: "map",
+      steps: [
+        { id: "a", instructions: "a" },
+        { id: "b", instructions: "b" },
+      ],
+    };
+    const result = WorkflowDef.safeParse(base);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const messages = result.error.issues.map((i) => i.message).join(" ");
+      expect(messages).toContain("non-empty `items`");
+      expect(messages).toContain("exactly one worker");
+      expect(messages).toContain("require an `aggregate`");
+    }
+  });
+
+  it("rejects aggregate ids that collide with static or dynamic workers", () => {
+    const parallel = {
+      ...validChain,
+      pattern: "parallel",
+      aggregate: { id: "a", instructions: "combine" },
+    };
+    const map = {
+      version: 2,
+      name: "colliding-map",
+      description: "collision",
+      pattern: "map",
+      items: ["x"],
+      steps: [{ id: "worker", instructions: "{{item}}" }],
+      aggregate: { id: "worker-1", instructions: "combine" },
+    };
+    expect(WorkflowDef.safeParse(parallel).success).toBe(false);
+    expect(WorkflowDef.safeParse(map).success).toBe(false);
+  });
+
+  it("rejects command map workers instead of interpolating data into a shell", () => {
+    const result = WorkflowDef.safeParse({
+      version: 2,
+      name: "shell-map",
+      description: "unsafe shell interpolation",
+      pattern: "map",
+      items: ["$(touch nope)"],
+      steps: [{ id: "worker", command: "echo {{item}}" }],
+      aggregate: { id: "aggregate", instructions: "combine" },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((i) => i.message).join(" ")).toContain(
+        "shell interpolation of items is intentionally unsupported"
+      );
+    }
+  });
+
+  it("rejects unsupported schemas and command output retries", () => {
+    const unsupported = {
+      ...validChain,
+      version: 2,
+      steps: [
+        {
+          id: "a",
+          instructions: "x",
+          output: { schema: { $ref: "https://example.test/schema" }, retryCount: 0 },
+        },
+      ],
+    };
+    const commandRetry = {
+      ...validChain,
+      version: 2,
+      steps: [
+        {
+          id: "a",
+          command: "printf '{}'",
+          output: { schema: { type: "object" } },
+        },
+      ],
+    };
+    expect(WorkflowDef.safeParse(unsupported).error?.issues[0]?.message).toContain("$ref");
+    expect(WorkflowDef.safeParse(commandRetry).error?.issues[0]?.message).toContain(
+      "cannot retry structured output"
+    );
+  });
+
   it("rejects an evaluator with neither a critic step nor a gate", () => {
     const def = {
       ...validChain,
@@ -298,5 +435,14 @@ describe("renderTemplate", () => {
 
   it("replaces repeated occurrences", () => {
     expect(renderTemplate("{{input}} {{input}}", { input: "x" })).toBe("x x");
+  });
+
+  it("renders map item JSON and zero-based index", () => {
+    expect(
+      renderTemplate("{{index}}={{item}}", { input: "", index: 0, item: { id: 7 } })
+    ).toBe('0={"id":7}');
+    expect(renderTemplate("{{index}}={{item}}", { input: "", index: 1, item: "x" })).toBe(
+      "1=x"
+    );
   });
 });

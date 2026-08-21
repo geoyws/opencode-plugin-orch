@@ -195,6 +195,63 @@ describe("parallel pattern", () => {
   });
 });
 
+describe("static map pattern", () => {
+  it("bounds fan-out, renders item/index, preserves item order, and aggregates", async () => {
+    const e = await envWith({
+      version: 2,
+      name: "map-records",
+      description: "process literal records",
+      pattern: "map",
+      items: ["alpha", { id: 2 }, "gamma"],
+      steps: [{ id: "worker", instructions: "item={{item}} index={{index}} input={{input}}" }],
+      aggregate: { id: "aggregate", instructions: "combine in source order" },
+    });
+    const run = await e.runner.startRun("map-records", "batch", { concurrency: 2 });
+
+    await waitFor(() => e.client.prompts.length === 2, "first map workers");
+    expect(e.client.prompts[0].stepID).toBe("worker-1");
+    expect(e.client.prompts[0].text).toContain("item=alpha index=0 input=batch");
+    expect(e.client.prompts[1].stepID).toBe("worker-2");
+    expect(e.client.prompts[1].text).toContain('item={"id":2} index=1 input=batch');
+    expect(e.client.maxInflight).toBe(2);
+
+    await completePrompt(e, "result A", 0);
+    await completePrompt(e, "result B", 1);
+    const third = await completePrompt(e, "result C", 2);
+    expect(third.stepID).toBe("worker-3");
+    expect(third.text).toContain("item=gamma index=2 input=batch");
+
+    const aggregate = await completePrompt(e, "ordered result", 3);
+    expect(aggregate.stepID).toBe("aggregate");
+    expect(aggregate.text.indexOf("result A")).toBeLessThan(aggregate.text.indexOf("result B"));
+    expect(aggregate.text.indexOf("result B")).toBeLessThan(aggregate.text.indexOf("result C"));
+    expect(aggregate.text).toContain("for item alpha");
+    expect(aggregate.text).toContain('for item {"id":2}');
+
+    const done = await waitForRun(e, run.id);
+    expect(done.status).toBe("completed");
+    expect(done.output).toBe("ordered result");
+    expect(Object.keys(done.steps)).toEqual(["worker-1", "worker-2", "worker-3", "aggregate"]);
+  });
+
+  it("enforces maxAgents before dispatching map workers", async () => {
+    const e = await envWith({
+      version: 2,
+      name: "too-many-items",
+      description: "too many",
+      pattern: "map",
+      items: [1, 2, 3],
+      steps: [{ id: "worker", instructions: "{{item}}" }],
+      aggregate: { id: "aggregate", instructions: "combine" },
+    });
+    const run = await e.runner.startRun("too-many-items", "x", { maxAgents: 2 });
+    const done = await waitForRun(e, run.id);
+    expect(done.status).toBe("failed");
+    expect(done.error).toContain("3 items; maxAgents is 2");
+    expect(e.client.prompts).toHaveLength(0);
+  });
+});
+
 describe("orchestrator pattern", () => {
   it("parses a JSON plan embedded in prose, runs workers, aggregates", async () => {
     const e = await env();
@@ -846,6 +903,88 @@ describe("session teardown", () => {
     e1.runner.destroy();
     rmrf(dir);
   });
+
+  it("resumes an IR v2 map without replaying completed items", async () => {
+    const dir = tmpProject();
+    const wfDir = path.join(dir, ".opencode", "workflows");
+    fs.mkdirSync(wfDir, { recursive: true });
+    const plan = {
+      version: 2 as const,
+      name: "recover-map",
+      description: "recover map",
+      pattern: "map" as const,
+      items: ["alpha", "beta", "gamma"],
+      steps: [{ id: "worker", instructions: "item={{item}} index={{index}}" }],
+      aggregate: { id: "aggregate", instructions: "combine" },
+    };
+    fs.writeFileSync(path.join(wfDir, "recover-map.json"), JSON.stringify(plan));
+    const e1 = await makeEnv(dir);
+    envs.push(e1);
+    const now = Date.now();
+    e1.store.createRun({
+      id: "run_recover_map",
+      workflow: "recover-map",
+      pattern: "map",
+      input: "batch",
+      status: "running",
+      plan,
+      config: {
+        maxIterations: 3,
+        concurrency: 1,
+        stepTimeoutMs: 600_000,
+        maxStepOutputChars: 50_000,
+        keepSessions: false,
+        stepRetries: 1,
+        maxAgents: 20,
+        permissionMode: "ask",
+      },
+      steps: {
+        "worker-1": {
+          id: "worker-1",
+          status: "completed",
+          output: "saved A",
+          summary: "saved A",
+          startedAt: now,
+          completedAt: now,
+        },
+        "worker-2": {
+          id: "worker-2",
+          status: "running",
+          sessionID: "orphan_map_worker",
+          startedAt: now,
+        },
+      },
+      iteration: 0,
+      createdAt: now,
+    });
+    e1.store.destroy();
+
+    const e2 = await makeEnv(dir);
+    envs.push(e2);
+    expect(e2.store.getRun("run_recover_map")?.status).toBe("paused");
+    e2.runner.resume("run_recover_map");
+    const second = await completePrompt(e2, "saved B", 0);
+    const third = await completePrompt(e2, "saved C", 1);
+    const aggregate = await completePrompt(e2, "recovered final", 2);
+    expect(second.stepID).toBe("worker-2");
+    expect(third.stepID).toBe("worker-3");
+    expect(aggregate.stepID).toBe("aggregate");
+    expect(aggregate.text).toContain("saved A");
+    expect(aggregate.text.indexOf("saved A")).toBeLessThan(aggregate.text.indexOf("saved B"));
+    expect(aggregate.text.indexOf("saved B")).toBeLessThan(aggregate.text.indexOf("saved C"));
+    const done = await waitForRun(e2, "run_recover_map");
+    expect(done.status).toBe("completed");
+    expect(e2.client.prompts.map((p) => p.stepID)).toEqual([
+      "worker-2",
+      "worker-3",
+      "aggregate",
+    ]);
+
+    envs = envs.filter((x) => x !== e1 && x !== e2);
+    e2.destroy();
+    e1.runner.destroy();
+    rmrf(dir);
+  });
 });
 
 describe("step retries", () => {
@@ -955,5 +1094,91 @@ describe("step retries", () => {
     const done = await waitForRun(e, run.id);
     expect(done.status).toBe("completed");
     expect(e.client.deletes).toHaveLength(0);
+  });
+});
+
+describe("structured output retries", () => {
+  const structuredChain = {
+    version: 2,
+    name: "structured-chain",
+    description: "schema checked",
+    pattern: "chain",
+    steps: [
+      {
+        id: "extract",
+        instructions: "extract {{input}}",
+        output: {
+          schema: {
+            type: "object",
+            properties: { result: { type: "string" } },
+            required: ["result"],
+            additionalProperties: false,
+          },
+          retryCount: 1,
+        },
+      },
+    ],
+  };
+
+  it("retries invalid structured output in a fresh session and records attempts", async () => {
+    const e = await envWith(structuredChain);
+    const run = await e.runner.startRun("structured-chain", "alpha");
+    const first = await completePrompt(e, "not json");
+    expect(first.text).toContain("Return ONLY one JSON value");
+    expect(first.text).toContain('"required":["result"]');
+
+    const second = await completePrompt(e, '{"result":"ok"}');
+    expect(second.sessionID).not.toBe(first.sessionID);
+    expect(second.stepID).toBe("extract");
+    const done = await waitForRun(e, run.id);
+    expect(done.status).toBe("completed");
+    expect(done.output).toBe('{"result":"ok"}');
+    expect(done.steps.extract.attempts).toBe(2);
+    expect(e.client.deletes).toContain(first.sessionID);
+    expect(e.client.deletes).toContain(second.sessionID);
+  });
+
+  it("fails after the declared schema retry budget is exhausted", async () => {
+    const e = await envWith(structuredChain);
+    const run = await e.runner.startRun("structured-chain", "alpha");
+    await completePrompt(e, "not json");
+    await completePrompt(e, '{"wrong":true}');
+
+    const done = await waitForRun(e, run.id);
+    expect(done.status).toBe("failed");
+    expect(done.error).toContain("structured output invalid");
+    expect(done.error).toContain("result:");
+    expect(done.steps.extract.status).toBe("failed");
+    expect(done.steps.extract.attempts).toBe(2);
+    expect(e.client.prompts).toHaveLength(2);
+  });
+
+  it("validates command output once without rerunning the command", async () => {
+    const e = await envWith({
+      version: 2,
+      name: "structured-command",
+      description: "schema checked command",
+      pattern: "chain",
+      steps: [
+        {
+          id: "emit",
+          command: "printf '{\"count\":2}'",
+          output: {
+            schema: {
+              type: "object",
+              properties: { count: { type: "integer" } },
+              required: ["count"],
+            },
+            retryCount: 0,
+          },
+        },
+      ],
+    });
+    const run = await e.runner.startRun("structured-command", "ignored");
+    const done = await waitForRun(e, run.id);
+    expect(done.status).toBe("completed");
+    expect(done.output).toBe('{"count":2}');
+    expect(done.steps.emit.attempts).toBeUndefined();
+    expect(e.client.prompts).toHaveLength(0);
   });
 });
