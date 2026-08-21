@@ -569,6 +569,7 @@ See [`docs/adr/`](docs/adr/) for architecture decision records:
 - [ADR-016](docs/adr/ADR-016-lead-control-plane-and-dedicated-goal-workers.md) — Lead control plane and dedicated goal workers (supersedes ADR-009 continuation)
 - [ADR-017](docs/adr/ADR-017-atomic-generation-hot-reload.md) — Atomic generation hot reload for server and TUI
 - [ADR-018](docs/adr/ADR-018-event-bound-goal-continuation-after-compaction.md) — Event-bound goal continuation after compaction
+- [ADR-020](docs/adr/ADR-020-use-orch-instead-of-deepseek-harness-for-goals-and-workflows.md) — Use Orch instead of DeepSeek Harness for goals and workflows
 
 ## License
 
