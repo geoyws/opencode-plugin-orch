@@ -23,6 +23,8 @@ describe("lead control-plane snapshot", () => {
     expect(snapshot).toContain("Orch lead/control-plane mode is active");
     expect(snapshot).toContain("goal (this lead): active");
     expect(snapshot).toContain(`worker=${goal.workerStatus}`);
+    expect(snapshot).toContain("lifetime-tokens=unknown (no cap)");
+    expect(snapshot).toContain("compact-every=180000");
     expect(snapshot).toContain("latest steering=include the browser receipt");
     expect(snapshot).toContain(`workflow ${run.id}: chain-draft-refine`);
     expect(snapshot).toContain("agents=1");

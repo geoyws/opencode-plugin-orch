@@ -38,7 +38,9 @@ export function controlPlaneSnapshot(store: Store, sessionID?: string): string {
     lines.push(
       `- goal${goal.sessionID === sessionID ? " (this lead)" : ""}: ${goal.status}; ` +
         `worker=${goal.workerStatus ?? "unknown"}; goal-turns=${goalTurns}; ` +
-        `tokens=${goal.observedTokens ?? "unknown"}/${goal.maxTokens}; elapsed=${elapsed(goal.createdAt)}; ` +
+        `lifetime-tokens=${goal.observedTokens ?? "unknown"}${
+          goal.maxTokens === undefined ? " (no cap)" : `/${goal.maxTokens}`
+        }; compact-every=${goal.softTokens}; elapsed=${elapsed(goal.createdAt)}; ` +
         `condition=${compact(goal.condition)}`
     );
     if (goal.lastReason) lines.push(`  last=${compact(goal.lastReason)}`);

@@ -58,10 +58,14 @@ observable through tools, slash commands, and an optional TUI.
 
 ### Goal budgets
 
-- Defaults: 20 turns, 4 hours, 250,000 observed tokens, three no-progress turns.
+- Defaults: no hard goal-turn cap, 4 hours, a recurring 180,000-token
+  compaction interval, no lifetime token cap, and three no-progress turns.
 - Every default is configurable through plugin options and per-goal tool input.
-- A hard limit stops automatic continuation before the next turn.
-- A soft limit triggers a compact checkpoint and warning.
+- An explicitly configured hard limit stops automatic continuation before the
+  next turn.
+- A goal soft-token interval triggers a compact checkpoint at every newly
+  crossed interval; a small turn after compaction does not immediately retrigger it.
+- A goal hard token limit is an optional lifetime-spend backstop, unset by default.
 - Goal compaction has a visible `compacting` worker state and cannot block the
   session event callback that drives continuation.
 - Unknown provider usage is reported as unknown, never zero.

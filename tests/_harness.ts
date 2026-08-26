@@ -211,7 +211,7 @@ export async function makeEnv(projectDir?: string): Promise<Env> {
     options: {
       maxTurns: 20,
       maxDurationMs: 14_400_000,
-      maxTokens: 250_000,
+      maxTokens: undefined,
       softTokens: 180_000,
       noProgressLimit: 3,
       evidenceChars: 12_000,

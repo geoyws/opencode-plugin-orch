@@ -13,9 +13,13 @@ cross-session workflow execution.
 
 ## Decision
 
-Track observed token usage at goal, run, node, and model levels. Support soft
-and hard budgets. A soft threshold creates a compact checkpoint; a hard
-threshold prevents new work and records a budget-exhausted outcome.
+Track observed token usage at goal, run, node, and model levels. Workflow runs
+retain soft and hard budgets. For a session goal, `softTokens` is a recurring
+compaction interval on its monotonic lifetime counter: after compacting at total
+`T`, the next boundary is `T + softTokens`. `maxTokens` is an optional,
+operator-selected lifetime-spend ceiling; it is unset by default and compaction
+does not reset it. Reaching an explicit ceiling prevents another goal turn and
+records a budget-exhausted outcome.
 
 Persist raw outputs separately from prompt-bound summaries. Later prompts use
 only explicitly referenced, size-capped material. Compact checkpoints record
@@ -29,9 +33,14 @@ summarization replaces older transcript messages. If a provider omits stable
 message IDs, retain the maximum visible transcript total rather than claiming
 precise incremental accounting.
 
+Persisted goals remain compatible. A historical goal carrying `maxTokens`
+retains that lifetime ceiling when reloaded; absence means no ceiling. The
+existing `lastCompactedTokens` total is the recurring interval baseline, so no
+state rewrite or second counter is required.
+
 ## Consequences
 
-- Runaway spend is bounded and visible.
+- Operators can bound lifetime spend explicitly, and observed spend remains visible.
 - Recovery needs far fewer tokens than transcript replay.
 - Summaries can omit details, so raw evidence must remain inspectable.
 - Token counts are exact only where OpenCode/provider metadata supplies them.

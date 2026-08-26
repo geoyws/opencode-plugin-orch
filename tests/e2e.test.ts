@@ -607,7 +607,6 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
         autoupdate: false,
         plugin: [[PLUGIN_PATH, {
           goalSoftTokens: 1,
-          goalMaxTokens: 1_000,
           goalSummarizerModel: MOCK_MODEL,
         }]],
         model: `${MOCK_PROVIDER}/${MOCK_MODEL_ID}`,
@@ -747,6 +746,7 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
       expect(goal.turns).toBe(2);
       expect(goal.lastVerdict).toBe("met");
       expect(goal.workerSessionID).toBeDefined();
+      expect(goal.maxTokens).toBeUndefined();
       expect(mockCalls.filter((call) => call.answered === "goal-worker")).toHaveLength(2);
       expect(mockCalls.filter((call) => call.answered === "goal-compaction")).toHaveLength(1);
       expect(mockCalls.filter((call) => call.answered === "goal-verdict")).toHaveLength(2);
@@ -755,6 +755,23 @@ describe.skipIf(SKIP_E2E)("e2e: real opencode server (tier 1: boot, tier 2: mock
         call.text.includes("need final evidence")
       );
       expect(secondWorker).toBeDefined();
+
+      await client.session.command({
+        path: { id: sessionID },
+        query: { directory: project },
+        body: {
+          command: "goal",
+          arguments: "",
+          agent: "build",
+          model: `${MOCK_PROVIDER}/${MOCK_MODEL_ID}`,
+        },
+      } as never);
+      const statusPrompt = mockCalls.find((call) =>
+        call.text.includes("Report this Orch goal status exactly")
+      );
+      expect(statusPrompt?.text).toContain("Observed lifetime tokens:");
+      expect(statusPrompt?.text).toContain("(no lifetime cap)");
+      expect(statusPrompt?.text).toContain("Compaction interval: 1 token");
     },
     TEST_TIMEOUT_MS
   );

@@ -14,8 +14,18 @@ export function createGoalTool(goals: GoalController): ToolDefinition {
       evaluatorModel: tool.schema.string().optional(),
       maxTurns: tool.schema.number().int().positive().optional(),
       maxDurationMs: tool.schema.number().int().positive().optional(),
-      maxTokens: tool.schema.number().int().positive().optional(),
-      softTokens: tool.schema.number().int().positive().optional(),
+      maxTokens: tool.schema
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Optional provider-reported lifetime token-spend ceiling"),
+      softTokens: tool.schema
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Recurring provider-reported token interval between compactions"),
       noProgressLimit: tool.schema.number().int().positive().optional(),
       maxCost: tool.schema.number().positive().optional(),
     },

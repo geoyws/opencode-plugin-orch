@@ -79,7 +79,7 @@ export interface GoalOptions {
   summarizerModel?: ModelRef;
   maxTurns?: number;
   maxDurationMs: number;
-  maxTokens: number;
+  maxTokens?: number;
   softTokens: number;
   noProgressLimit: number;
   evidenceChars: number;
@@ -259,10 +259,7 @@ export class GoalController {
       maxTurns: options.maxTurns ?? this.deps.options.maxTurns,
       maxDurationMs: options.maxDurationMs ?? this.deps.options.maxDurationMs,
       maxTokens: options.maxTokens ?? this.deps.options.maxTokens,
-      softTokens: Math.min(
-        options.softTokens ?? this.deps.options.softTokens,
-        options.maxTokens ?? this.deps.options.maxTokens
-      ),
+      softTokens: options.softTokens ?? this.deps.options.softTokens,
       noProgressLimit: options.noProgressLimit ?? this.deps.options.noProgressLimit,
       maxCost: options.maxCost ?? this.deps.options.maxCost,
       noProgressTurns: 0,
@@ -390,10 +387,7 @@ export class GoalController {
     const goal = this.deps.store.getGoal(sessionID);
     if (!goal) return "No goal set.";
     const elapsed = Math.max(0, (goal.completedAt ?? Date.now()) - goal.createdAt);
-    const tokens =
-      goal.observedTokens === undefined
-        ? "unknown"
-        : `${goal.observedTokens}/${goal.maxTokens}`;
+    const tokens = goal.observedTokens ?? "unknown";
     const lines = [
       `Goal ${goal.status}: ${goal.condition}`,
       `Worker: ${goal.workerStatus ?? "unknown"}${
@@ -403,7 +397,10 @@ export class GoalController {
         goal.maxTurns === undefined ? " (no hard cap)" : `/${goal.maxTurns}`
       }`,
       `Elapsed: ${Math.floor(elapsed / 1000)}s`,
-      `Observed tokens: ${tokens}`,
+      `Observed lifetime tokens: ${tokens}${
+        goal.maxTokens === undefined ? " (no lifetime cap)" : `/${goal.maxTokens}`
+      }`,
+      `Compaction interval: ${goal.softTokens} token${goal.softTokens === 1 ? "" : "s"}`,
       `Observed cost: ${
         goal.observedCost === undefined ? "unknown" : goal.observedCost
       }${goal.maxCost === undefined ? "" : `/${goal.maxCost}`}`,
@@ -415,7 +412,10 @@ export class GoalController {
     }
     if (goal.lastReason) lines.push(`Last verdict: ${goal.lastReason}`);
     if (goal.lastCompactedTokens !== undefined) {
-      lines.push(`Last auto-compaction: ${goal.lastCompactedTokens} tokens`);
+      lines.push(
+        `Last auto-compaction: ${goal.lastCompactedTokens} lifetime tokens; ` +
+          `next at ${goal.lastCompactedTokens + goal.softTokens}`
+      );
     }
     if ((goal.steering ?? []).length > 0) {
       lines.push(`Latest steering: ${goal.steering.at(-1)?.text}`);
@@ -711,8 +711,7 @@ export class GoalController {
       goal.workerModel;
     const shouldCompact =
       observedTokens !== undefined &&
-      observedTokens >= goal.softTokens &&
-      (goal.lastCompactedTokens === undefined || observedTokens > goal.lastCompactedTokens) &&
+      observedTokens >= (goal.lastCompactedTokens ?? 0) + goal.softTokens &&
       compactionModel !== undefined &&
       this.deps.client.session.summarize !== undefined;
 
@@ -913,7 +912,11 @@ export class GoalController {
     if (now - goal.createdAt >= goal.maxDurationMs) {
       return `time budget exhausted (${goal.maxDurationMs}ms)`;
     }
-    if (goal.observedTokens !== undefined && goal.observedTokens >= goal.maxTokens) {
+    if (
+      goal.maxTokens !== undefined &&
+      goal.observedTokens !== undefined &&
+      goal.observedTokens >= goal.maxTokens
+    ) {
       return `token budget exhausted (${goal.observedTokens}/${goal.maxTokens})`;
     }
     if (

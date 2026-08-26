@@ -170,7 +170,11 @@ export const GoalState = z.object({
   // evaluator cycles.
   maxTurns: z.number().int().positive().optional(),
   maxDurationMs: z.number().int().positive().default(14_400_000),
-  maxTokens: z.number().int().positive().default(250_000),
+  // Optional lifetime-spend backstop. Existing persisted goals with a value
+  // keep their ceiling; new goals are uncapped unless the operator opts in.
+  maxTokens: z.number().int().positive().optional(),
+  // Recurring interval on the monotonic lifetime counter, not a one-shot
+  // threshold and not a proxy for currently held context.
   softTokens: z.number().int().positive().default(180_000),
   maxCost: z.number().positive().optional(),
   noProgressLimit: z.number().int().positive().default(3),

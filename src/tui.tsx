@@ -184,7 +184,7 @@ function Dashboard(props: { directory: string; text: unknown; muted: unknown; ac
           <For each={goals()}>
             {(goal) => (
               <text fg={props.text as never}>
-                [{goal.status}] {goal.condition} · worker {goal.workerStatus ?? "unknown"} · {goalTurns(goal.turns, goal.maxTurns)} · tokens {goal.observedTokens ?? "unknown"}/{goal.maxTokens}
+                [{goal.status}] {goal.condition} · worker {goal.workerStatus ?? "unknown"} · {goalTurns(goal.turns, goal.maxTurns)} · lifetime tokens {goal.observedTokens ?? "unknown"}{goal.maxTokens === undefined ? " (no cap)" : `/${goal.maxTokens}`} · compact every {goal.softTokens}
               </text>
             )}
           </For>

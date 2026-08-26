@@ -83,13 +83,13 @@ async function setup() {
       evaluatorModel: { providerID: "deepseek", modelID: "deepseek-chat" },
       summarizerModel: { providerID: "deepseek", modelID: "deepseek-chat" },
       maxDurationMs: 60_000,
-      maxTokens: 1000,
+      maxTokens: undefined,
       softTokens: 700,
       noProgressLimit: 3,
       evidenceChars: 2000,
     },
   });
-  return { store, client, goals, destroy: () => store.destroy() };
+  return { store, client, goals, directory, destroy: () => store.destroy() };
 }
 
 function assistant(
@@ -195,7 +195,12 @@ describe("GoalController", () => {
     const e = await setup();
     const uncapped = await e.goals.start("lead", "uncapped");
     expect(uncapped.maxTurns).toBeUndefined();
+    expect(uncapped.maxTokens).toBeUndefined();
     expect(e.goals.status("lead")).toContain("Goal turns: 0 (no hard cap)");
+    expect(e.goals.status("lead")).toContain(
+      "Observed lifetime tokens: unknown (no lifetime cap)"
+    );
+    expect(e.goals.status("lead")).toContain("Compaction interval: 700 tokens");
 
     const capped = await e.goals.start("lead", "one turn only", { maxTurns: 1 });
     e.client.verdict = { verdict: "not_met", reason: "unfinished" };
@@ -234,6 +239,62 @@ describe("GoalController", () => {
     expect(e.store.getGoal("lead")?.status).toBe("budget_exhausted");
     expect(e.client.continuations).toHaveLength(2);
     e.destroy();
+  });
+
+  it("treats softTokens as a recurring interval without imposing a lifetime cap", async () => {
+    const e = await setup();
+    const goal = await e.goals.start("lead", "finish", {
+      softTokens: 100,
+      noProgressLimit: 10,
+    });
+    expect(goal.maxTokens).toBeUndefined();
+    e.client.verdict = { verdict: "not_met", reason: "keep going" };
+
+    e.client.messagesBySession.set(goal.workerSessionID!, [
+      assistant("first interval", 75, [{ type: "tool" }], "msg_1"),
+    ]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    await Bun.sleep(0);
+    expect(e.client.summaries).toEqual([goal.workerSessionID]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.lastCompactedTokens).toBe(154);
+
+    e.client.messagesBySession.set(goal.workerSessionID!, [
+      assistant("below next interval", 30, [{ type: "tool" }], "msg_2"),
+    ]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.observedTokens).toBe(218);
+    expect(e.client.summaries).toHaveLength(1);
+
+    e.client.messagesBySession.set(goal.workerSessionID!, [
+      assistant("cross next interval", 20, [{ type: "tool" }], "msg_3"),
+    ]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    await Bun.sleep(0);
+    expect(e.store.getGoal("lead")?.observedTokens).toBe(262);
+    expect(e.client.summaries).toEqual([goal.workerSessionID, goal.workerSessionID]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.lastCompactedTokens).toBe(262);
+    expect(e.store.getGoal("lead")?.status).toBe("active");
+    expect(e.goals.status("lead")).toContain(
+      "Last auto-compaction: 262 lifetime tokens; next at 362"
+    );
+    e.destroy();
+  });
+
+  it("preserves an explicit lifetime cap across the persisted snapshot", async () => {
+    const e = await setup();
+    await e.goals.start("lead", "legacy capped goal", {
+      maxTokens: 500,
+      softTokens: 100,
+    });
+    e.destroy();
+
+    const reloaded = new Store(e.directory);
+    await reloaded.init();
+    expect(reloaded.getGoal("lead")?.maxTokens).toBe(500);
+    expect(reloaded.getGoal("lead")?.softTokens).toBe(100);
+    reloaded.destroy();
   });
 
   it("does not deadlock goal continuation when summarize stays pending", async () => {

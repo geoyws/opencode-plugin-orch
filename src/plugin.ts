@@ -246,14 +246,13 @@ function positiveNumber(value: unknown): number | undefined {
 }
 
 function goalOptions(options: PluginOptions | undefined, reporter: Reporter): GoalOptions {
-  const maxTokens = positiveInt(options?.goalMaxTokens, 250_000);
   return {
     evaluatorModel: modelOption(options?.goalEvaluatorModel, "goalEvaluatorModel", reporter),
     summarizerModel: modelOption(options?.goalSummarizerModel, "goalSummarizerModel", reporter),
     maxTurns: optionalPositiveInt(options?.goalMaxTurns),
     maxDurationMs: positiveInt(options?.goalMaxDurationMs, 14_400_000),
-    maxTokens,
-    softTokens: Math.min(positiveInt(options?.goalSoftTokens, 180_000), maxTokens),
+    maxTokens: optionalPositiveInt(options?.goalMaxTokens),
+    softTokens: positiveInt(options?.goalSoftTokens, 180_000),
     noProgressLimit: positiveInt(options?.goalNoProgressTurns, 3),
     evidenceChars: positiveInt(options?.goalEvidenceChars, 12_000),
     maxCost: positiveNumber(options?.goalMaxCost),
