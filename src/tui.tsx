@@ -57,6 +57,12 @@ function plural(count: number, singular: string): string {
   return `${count} ${count === 1 ? singular : `${singular}s`}`;
 }
 
+function goalTurns(turns: number, maxTurns?: number): string {
+  return maxTurns === undefined
+    ? plural(turns, "goal turn")
+    : `${turns}/${maxTurns} goal turns`;
+}
+
 function truncateLine(line: string, maxWidth: number): string {
   if (line.length <= maxWidth) return line;
   if (maxWidth <= 1) return "";
@@ -88,7 +94,7 @@ export function activityLines(
     const worker = goal.workerStatus ?? "unknown";
     lines.push(
       terminalWidth >= 100
-        ? `goal ${goal.status} ${goal.turns}/${goal.maxTurns} · worker ${worker} · ${plural(goalAgents, "agent")}`
+        ? `goal ${goal.status} · ${goalTurns(goal.turns, goal.maxTurns)} · worker ${worker} · ${plural(goalAgents, "agent")}`
         : `goal ${goal.status} · ${worker} · ${plural(goalAgents, "agent")}`
     );
   }
@@ -178,7 +184,7 @@ function Dashboard(props: { directory: string; text: unknown; muted: unknown; ac
           <For each={goals()}>
             {(goal) => (
               <text fg={props.text as never}>
-                [{goal.status}] {goal.condition} · worker {goal.workerStatus ?? "unknown"} · turns {goal.turns}/{goal.maxTurns} · tokens {goal.observedTokens ?? "unknown"}/{goal.maxTokens}
+                [{goal.status}] {goal.condition} · worker {goal.workerStatus ?? "unknown"} · {goalTurns(goal.turns, goal.maxTurns)} · tokens {goal.observedTokens ?? "unknown"}/{goal.maxTokens}
               </text>
             )}
           </For>

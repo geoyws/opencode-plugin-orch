@@ -82,7 +82,6 @@ async function setup() {
     options: {
       evaluatorModel: { providerID: "deepseek", modelID: "deepseek-chat" },
       summarizerModel: { providerID: "deepseek", modelID: "deepseek-chat" },
-      maxTurns: 20,
       maxDurationMs: 60_000,
       maxTokens: 1000,
       softTokens: 700,
@@ -159,6 +158,57 @@ describe("GoalController", () => {
       providerID: "deepseek",
       modelID: "deepseek-reasoner",
     });
+    e.destroy();
+  });
+
+  it("uses fresh tool activity as the measurable no-progress proxy", async () => {
+    const e = await setup();
+    const goal = await e.goals.start("lead", "finish", { noProgressLimit: 2 });
+    e.client.verdict = { verdict: "not_met", reason: "more evidence required" };
+    e.client.messagesBySession.set(goal.workerSessionID!, [
+      assistant("ran checks", 10, [{ type: "tool" }], "msg_1"),
+      assistant("reported checks", 10, undefined, "msg_2"),
+    ]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.noProgressTurns).toBe(0);
+
+    e.client.messagesBySession.set(goal.workerSessionID!, [
+      assistant("reported checks", 10, undefined, "msg_2"),
+      assistant("still thinking", 10, undefined, "msg_3"),
+    ]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.noProgressTurns).toBe(1);
+
+    e.client.messagesBySession.set(goal.workerSessionID!, [
+      assistant("still thinking", 10, undefined, "msg_3"),
+      assistant("same conclusion", 10, undefined, "msg_4"),
+    ]);
+    await e.goals.onSessionIdle(goal.workerSessionID!);
+    expect(e.store.getGoal("lead")?.status).toBe("paused");
+    expect(e.store.getGoal("lead")?.lastReason).toContain(
+      "2 goal turns without fresh tool activity"
+    );
+    e.destroy();
+  });
+
+  it("has no hard turn cap by default and honors an explicit ceiling exactly", async () => {
+    const e = await setup();
+    const uncapped = await e.goals.start("lead", "uncapped");
+    expect(uncapped.maxTurns).toBeUndefined();
+    expect(e.goals.status("lead")).toContain("Goal turns: 0 (no hard cap)");
+
+    const capped = await e.goals.start("lead", "one turn only", { maxTurns: 1 });
+    e.client.verdict = { verdict: "not_met", reason: "unfinished" };
+    e.client.messagesBySession.set(capped.workerSessionID!, [
+      assistant("worked", 10, [{ type: "tool" }], "msg_1"),
+    ]);
+    await e.goals.onSessionIdle(capped.workerSessionID!);
+    expect(e.store.getGoal("lead")?.turns).toBe(1);
+    expect(e.store.getGoal("lead")?.status).toBe("budget_exhausted");
+    expect(e.store.getGoal("lead")?.lastReason).toBe(
+      "goal-turn ceiling exhausted (1)"
+    );
+    expect(e.client.continuations).toHaveLength(2);
     e.destroy();
   });
 

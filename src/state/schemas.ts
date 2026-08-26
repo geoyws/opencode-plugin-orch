@@ -165,7 +165,10 @@ export const GoalState = z.object({
   turns: z.number().int().nonnegative().default(0),
   observedTokens: z.number().int().nonnegative().optional(),
   observedCost: z.number().nonnegative().optional(),
-  maxTurns: z.number().int().positive().default(20),
+  // Optional compatibility ceiling. Normal goals are bounded by measurable
+  // no-progress turns plus time, not by an arbitrary number of productive
+  // evaluator cycles.
+  maxTurns: z.number().int().positive().optional(),
   maxDurationMs: z.number().int().positive().default(14_400_000),
   maxTokens: z.number().int().positive().default(250_000),
   softTokens: z.number().int().positive().default(180_000),

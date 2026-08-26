@@ -24,7 +24,6 @@ describe("separate TUI entrypoint", () => {
           createdAt: 1_000,
           updatedAt: 2_000,
           turns: 2,
-          maxTurns: 20,
           maxDurationMs: 1000,
           maxTokens: 1000,
           softTokens: 700,
@@ -96,7 +95,7 @@ describe("separate TUI entrypoint", () => {
     } satisfies Snapshot;
 
     expect(activityLines(snapshot, "lead", 130_000)).toEqual([
-      "goal active 2/20 · worker running · 1 agent",
+      "goal active · 2 goal turns · worker running · 1 agent",
       "parallel-review · running · 2m 0s elapsed · 1 agent",
       "test-fix-loop · paused · 1m 0s elapsed · 0 agents",
       "1 agent running across 2 workflows",
@@ -107,7 +106,7 @@ describe("separate TUI entrypoint", () => {
         "1 agent running across 2 workflows"
     );
     expect(activityLines(snapshot, undefined, 130_000)).not.toContain(
-      "goal active 2/20 · worker running · 1 agent"
+      "goal active · 2 goal turns · worker running · 1 agent"
     );
     expect(activityLines(snapshot, "lead", 130_000, 60)).toEqual([
       "goal active · running · 1 agent",

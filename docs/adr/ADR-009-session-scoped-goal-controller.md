@@ -20,6 +20,15 @@ A `not_met` verdict originally submitted a bounded continuation prompt to the
 original session. ADR-016 replaces that behavior with a dedicated worker while
 retaining this ADR's independent evaluator and bounded lifecycle.
 
+A goal turn is one completed worker-idle to independent-evaluator cycle, not a
+raw model loop or streaming step. Productive goals have no hard turn ceiling by
+default. The primary loop bound is three consecutive `not_met` goal turns with
+no fresh assistant tool activity since the prior evaluation, with the wall-clock
+budget as a backstop. Message IDs identify fresh activity across transcript
+growth and compaction; when a provider omits them, only the latest assistant
+response is attributable to the completed turn. `maxTurns` remains an explicit
+optional compatibility ceiling and stops before another worker continuation.
+
 The controller enforces turn, time, token, cost, and no-progress limits. It
 ignores evaluator and workflow-step sessions and will not evaluate while tracked
 child work remains active.

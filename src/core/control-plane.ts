@@ -32,9 +32,12 @@ export function controlPlaneSnapshot(store: Store, sessionID?: string): string {
   }
   lines.push("Current delegated work (live durable snapshot):");
   for (const goal of goals) {
+    const goalTurns = `${goal.turns}${
+      goal.maxTurns === undefined ? " (no hard cap)" : `/${goal.maxTurns}`
+    }`;
     lines.push(
       `- goal${goal.sessionID === sessionID ? " (this lead)" : ""}: ${goal.status}; ` +
-        `worker=${goal.workerStatus ?? "unknown"}; turns=${goal.turns}/${goal.maxTurns}; ` +
+        `worker=${goal.workerStatus ?? "unknown"}; goal-turns=${goalTurns}; ` +
         `tokens=${goal.observedTokens ?? "unknown"}/${goal.maxTokens}; elapsed=${elapsed(goal.createdAt)}; ` +
         `condition=${compact(goal.condition)}`
     );

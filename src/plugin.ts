@@ -233,6 +233,12 @@ function positiveInt(value: unknown, fallback: number): number {
     : fallback;
 }
 
+function optionalPositiveInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
 function positiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
@@ -244,7 +250,7 @@ function goalOptions(options: PluginOptions | undefined, reporter: Reporter): Go
   return {
     evaluatorModel: modelOption(options?.goalEvaluatorModel, "goalEvaluatorModel", reporter),
     summarizerModel: modelOption(options?.goalSummarizerModel, "goalSummarizerModel", reporter),
-    maxTurns: positiveInt(options?.goalMaxTurns, 20),
+    maxTurns: optionalPositiveInt(options?.goalMaxTurns),
     maxDurationMs: positiveInt(options?.goalMaxDurationMs, 14_400_000),
     maxTokens,
     softTokens: Math.min(positiveInt(options?.goalSoftTokens, 180_000), maxTokens),

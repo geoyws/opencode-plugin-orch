@@ -77,7 +77,7 @@ export interface GoalClient {
 export interface GoalOptions {
   evaluatorModel?: ModelRef;
   summarizerModel?: ModelRef;
-  maxTurns: number;
+  maxTurns?: number;
   maxDurationMs: number;
   maxTokens: number;
   softTokens: number;
@@ -195,9 +195,17 @@ function observedUsage(messages: MessageRecord[], accounted: string[]): {
   };
 }
 
-function latestAssistantUsedTools(messages: MessageRecord[]): boolean {
-  const latest = [...messages].reverse().find((m) => m.info.role === "assistant");
-  return latest?.parts.some((part) => part.type === "tool") ?? false;
+function freshAssistantUsedTools(messages: MessageRecord[], accounted: string[]): boolean {
+  const assistants = messages.filter((message) => message.info.role === "assistant");
+  const charged = new Set(accounted);
+  // Message IDs make the progress proxy exact across a growing or compacted
+  // transcript. If a provider omits IDs, only the latest assistant response is
+  // attributable to the just-completed goal turn.
+  const fresh =
+    assistants.length > 0 && assistants.every((message) => Boolean(message.info.id))
+      ? assistants.filter((message) => !charged.has(message.info.id!))
+      : assistants.slice(-1);
+  return fresh.some((message) => message.parts.some((part) => part.type === "tool"));
 }
 
 export class GoalController {
@@ -391,7 +399,9 @@ export class GoalController {
       `Worker: ${goal.workerStatus ?? "unknown"}${
         goal.workerSessionID ? ` (${goal.workerSessionID})` : ""
       }`,
-      `Turns: ${goal.turns}/${goal.maxTurns}`,
+      `Goal turns: ${goal.turns}${
+        goal.maxTurns === undefined ? " (no hard cap)" : `/${goal.maxTurns}`
+      }`,
       `Elapsed: ${Math.floor(elapsed / 1000)}s`,
       `Observed tokens: ${tokens}`,
       `Observed cost: ${
@@ -745,7 +755,10 @@ export class GoalController {
       ).catch(() => {});
     }
 
-    const usedTools = latestAssistantUsedTools(messages);
+    const usedTools = freshAssistantUsedTools(
+      messages,
+      original.accountedMessageIDs ?? []
+    );
     const current = this.deps.store.getGoal(goal.sessionID);
     if (!current || current.status !== "active") return;
     goal = {
@@ -768,12 +781,24 @@ export class GoalController {
       });
       return undefined;
     }
+    if (goal.maxTurns !== undefined && goal.turns >= goal.maxTurns) {
+      this.deps.store.resolveGoal({
+        ...goal,
+        status: "budget_exhausted",
+        workerStatus: "stopped",
+        completedAt: Date.now(),
+        lastReason: `goal-turn ceiling exhausted (${goal.maxTurns})`,
+      });
+      return undefined;
+    }
     if (goal.noProgressTurns >= goal.noProgressLimit) {
       this.deps.store.resolveGoal({
         ...goal,
         status: "paused",
         workerStatus: "idle",
-        lastReason: `paused after ${goal.noProgressTurns} turns without tool activity: ${verdict.reason}`,
+        lastReason:
+          `paused after ${goal.noProgressTurns} goal turns without fresh tool activity: ` +
+          verdict.reason,
       });
       return undefined;
     }
@@ -882,7 +907,9 @@ export class GoalController {
   }
 
   private limitReason(goal: GoalState, now: number): string | undefined {
-    if (goal.turns >= goal.maxTurns) return `turn budget exhausted (${goal.maxTurns})`;
+    if (goal.maxTurns !== undefined && goal.turns >= goal.maxTurns) {
+      return `goal-turn ceiling exhausted (${goal.maxTurns})`;
+    }
     if (now - goal.createdAt >= goal.maxDurationMs) {
       return `time budget exhausted (${goal.maxDurationMs}ms)`;
     }
